@@ -32,13 +32,13 @@ Serializer(io::IO) = Serializer{typeof(io)}(io)
 
 const n_int_literals = 33
 const n_reserved_slots = 24
-const n_reserved_tags = 8
+const n_reserved_tags = 7
 
 const TAGS = Any[
     Symbol, Int8, UInt8, Int16, UInt16, Int32, UInt32, Int64, UInt64, Int128, UInt128,
     Float16, Float32, Float64, Char, DataType, Union, UnionAll, Core.TypeName, Tuple,
     Array, Expr, LineNumberNode, :__LabelNode__, GotoNode, QuoteNode, CodeInfo, TypeVar,
-    Core.Box, Core.MethodInstance, Module, Task, String, SimpleVector, Method,
+    Core.Box, Core.MethodInstance, Core.OpaqueClosure, Module, Task, String, SimpleVector, Method,
     GlobalRef, SlotNumber, TypedSlot, NewvarNode, SSAValue,
 
     # dummy entries for tags that don't correspond directly to types
@@ -60,6 +60,7 @@ const TAGS = Any[
     Symbol, # IDDICT_TAG
     Symbol, # SHARED_REF_TAG
     ReturnNode, GotoIfNot,
+    ## ASK: are Symbols here only for capping the array length to 255?
     fill(Symbol, n_reserved_tags)...,
 
     (), Bool, Any, Bottom, Core.TypeofBottom, Type, svec(), Tuple{}, false, true, nothing,
@@ -79,7 +80,7 @@ const TAGS = Any[
 
 @assert length(TAGS) == 255
 
-const ser_version = 14 # do not make changes without bumping the version #!
+const ser_version = 15 # do not make changes without bumping the version #!
 
 format_version(::AbstractSerializer) = ser_version
 format_version(s::Serializer) = s.version
@@ -114,6 +115,7 @@ const ARRAY_TAG = findfirst(==(Array), TAGS)%Int32
 const EXPR_TAG = sertag(Expr)
 const MODULE_TAG = sertag(Module)
 const METHODINSTANCE_TAG = sertag(Core.MethodInstance)
+const OC_TAG = sertag(Core.OpaqueClosure)
 const METHOD_TAG = sertag(Method)
 const TASK_TAG = sertag(Task)
 const DATATYPE_TAG = sertag(DataType)
@@ -434,14 +436,33 @@ end
 
 function serialize(s::AbstractSerializer, linfo::Core.MethodInstance)
     serialize_cycle(s, linfo) && return
-    isa(linfo.def, Module) || error("can only serialize toplevel MethodInstance objects")
+    ## ASK: can the top-level exception be removed
+    if isa(linfo.def, Module)
+        serialize(s, linfo.def)
+    else
+        serialize(s, nothing)
+    end
+    ## there is probably a better way to do this
+    try
+        serialize(s, linfo.uninferred)
+    catch
+        serialize(s, nothing)
+    end
     writetag(s.io, METHODINSTANCE_TAG)
-    serialize(s, linfo.uninferred)
     serialize(s, nothing)  # for backwards compat
     serialize(s, linfo.sparam_vals)
     serialize(s, Any)  # for backwards compat
     serialize(s, linfo.specTypes)
     serialize(s, linfo.def)
+    nothing
+end
+
+function serialize(s::AbstractSerializer, oc::Core.OpaqueClosure)
+    serialize_cycle(s, oc) && return
+    writetag(s.io, OC_TAG)
+    serialize(s, oc.captures)
+    serialize(s, oc.isva)
+    serialize(s, oc.source)
     nothing
 end
 
@@ -920,10 +941,12 @@ function handle_deserialize(s::AbstractSerializer, b::Int32)
         t = deserialize(s)
         return deserialize_dict(s, t)
     end
-    t = desertag(b)::DataType
-    if t.mutable && length(t.types) > 0  # manual specialization of fieldcount
-        slot = s.counter; s.counter += 1
-        push!(s.pending_refs, slot)
+    t = desertag(b)
+    if isa(t, DataType)
+        if t.mutable && length(t.types) > 0  # manual specialization of fieldcount
+            slot = s.counter; s.counter += 1
+            push!(s.pending_refs, slot)
+        end
     end
     return deserialize(s, t)
 end
@@ -1047,6 +1070,7 @@ end
 function deserialize(s::AbstractSerializer, ::Type{Core.MethodInstance})
     linfo = ccall(:jl_new_method_instance_uninit, Ref{Core.MethodInstance}, (Ptr{Cvoid},), C_NULL)
     deserialize_cycle(s, linfo)
+    linfo.def = deserialize(s)
     linfo.uninferred = deserialize(s)::CodeInfo
     tag = Int32(read(s.io, UInt8)::UInt8)
     if tag != UNDEFREF_TAG
@@ -1058,6 +1082,24 @@ function deserialize(s::AbstractSerializer, ::Type{Core.MethodInstance})
     linfo.specTypes = deserialize(s)
     linfo.def = deserialize(s)::Module
     return linfo
+end
+
+function deserialize(s::AbstractSerializer, ::Type{Core.OpaqueClosure})
+    captures = deserialize(s)::Tuple
+    isva = deserialize(s)::Bool
+    source = deserialize(s)::Method
+    ## FIXME: this needs better lb, ub for inference
+    args = Any[Tuple{}, isva, Union{}, Any, source, captures...]
+    oc = GC.@preserve args ccall(
+        :jl_new_opaque_closure_jlcall,
+        Any,
+        (Ptr{Cvoid}, Ptr{Cvoid}, Int),
+        C_NULL,
+        pointer(args),
+        length(args),
+    )
+    @show oc
+    return oc
 end
 
 function deserialize(s::AbstractSerializer, ::Type{Core.LineInfoNode})
@@ -1359,6 +1401,7 @@ function deserialize(s::AbstractSerializer, ::Type{UnionAll})
 end
 
 function deserialize(s::AbstractSerializer, ::Type{Task})
+    @show "IN TASK"
     t = Task(()->nothing)
     deserialize_cycle(s, t)
     t.code = deserialize(s)
