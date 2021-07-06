@@ -18,13 +18,7 @@ const TaskGroup = Channel{Any}
 
 taskgroup() = Channel{Any}(Inf)::TaskGroup
 
-function spawn!(tasks::TaskGroup, @nospecialize(f))
-    t = Task(f)
-    t.sticky = false
-    schedule(t)
-    push!(tasks, t)
-    return nothing
-end
+function spawn! end
 
 # Can we make it more efficient using the may-happen parallelism property
 # (i.e., the lack of concurrent synchronizations)?

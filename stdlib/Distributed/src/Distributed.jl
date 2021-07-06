@@ -16,6 +16,7 @@ using Base: Process, Semaphore, JLOptions, buffer_writes, @sync_add,
             shell_escape_posixly, shell_escape_wincmd, escape_microsoft_c_args,
             uv_error, something, notnothing, isbuffered, mapany
 using Base.Threads: Event
+using Base.Experimental.Tapir
 
 using Serialization, Sockets
 import Serialization: serialize, deserialize
@@ -107,8 +108,15 @@ include("workerpool.jl")
 include("pmap.jl")
 include("managers.jl")    # LocalManager and SSHManager
 
-function __init__()
-    init_parallel()
+function fib(N)
+    if N <= 1
+        return N
+    end
+    Tapir.@sync begin
+        Tapir.@spawn $x1 = fib(N - 1)
+        $x2 = fib(N - 2)
+    end
+    return x1 + x2
 end
 
 end
