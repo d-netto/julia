@@ -130,19 +130,79 @@ using Base.Experimental: Tapir
 @noinline produce() = P::Int
 P = 1
 
+@noinline produce(x) = Base.inferencebarrier(x)::typeof(x)
+
 """ A simple example with less macro tricks. """
 function simple()
-    ao = Tapir.Output{:a}()
-    bo = Tapir.Output{:b}()
+    local ao, bo
     token = Tapir.@syncregion
     Tapir.@spawnin token begin
-        ao.x = produce()
+        ao = produce()
     end
-    bo.x = produce()
+    bo = produce()
     Tapir.@sync_end token
-    a = ao.x
-    b = bo.x
+    a = Tapir._load(ao, :a)
+    b = Tapir._load(bo, :b)
     a + b
+end
+
+function simple_task_output()
+    Tapir.@output a b
+    token = Tapir.@syncregion
+    Tapir.@spawnin token begin
+        a = produce()
+    end
+    b = produce()
+    Tapir.@sync_end token
+    a + b
+end
+
+call(f) = f()
+
+function simple_closure_set_by_one(flag)
+    local slot
+    token = Tapir.@syncregion
+    Tapir.@spawnin token begin
+        call() do
+            if flag
+                slot = produce(111)
+            end
+        end
+    end
+    call() do
+        if !flag
+            slot = produce(222)
+        end
+    end
+    Tapir.@sync_end token
+    out = Tapir._load(slot, :out)
+    return out
+end
+
+function simple_escaping_task_output()
+    local slot
+    token = Tapir.@syncregion
+    Tapir.@spawnin token begin
+        slot = produce(111)
+    end
+    Tapir.@sync_end token
+    identity(slot)  # escaping
+    out = Tapir._load(slot, :out)
+    return out
+end
+
+function simple_conditional_task_output(x::Bool)
+    local slot
+    token = Tapir.@syncregion
+    Tapir.@spawnin token if x
+        slot = produce(111)
+    end
+    b = produce(222)
+    Tapir.@sync_end token
+    if @isdefined(slot)
+        a = Tapir._load(slot, :a)
+    end
+    return b + (x ? a : 0)
 end
 
 function f()
@@ -195,9 +255,9 @@ function update_distinct(bool::Bool)
     y = 0
     Tapir.@sync begin
         Tapir.@spawn if bool
-            $x = id(x + 1)
+            $x = id($x + 1)
         else
-            $y = id(y + 2)
+            $y = id($y + 2)
         end
         if bool
             $y = id(y + 3)

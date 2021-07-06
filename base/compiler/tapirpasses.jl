@@ -20,7 +20,7 @@ analyze and optimize the code containing the parallel tasks.
 # References
 
 * Schardl, Tao B., William S. Moses, and Charles E. Leiserson.
-  "Tapir: Embedding Recursive Fork-Join Parallelism into LLVM’s Intermediate
+  "Tapir: Embedding Recursive Fork-Join Parallelism into LLVM's Intermediate
   Representation." ACM Transactions on Parallel Computing 6, no. 4 (December
   17, 2019): 19:1–19:33. https://doi.org/10.1145/3365655.
 
@@ -91,6 +91,33 @@ function foreach_task_depth_first(f, tasks)
 end
 
 """
+    task_by_detach(tasks::Vector{ChildTask}, detach::Int) -> nothing or task::ChildTask
+"""
+function task_by_detach(tasks, detach::Int)
+    worklist = collect(ChildTask, tasks)
+    while !isempty(worklist)
+        local task::ChildTask
+        task = pop!(worklist)
+        if task.detach == detach
+            return task
+        end
+        if task.subtasks !== nothing
+            append!(worklist, task.subtasks)
+        end
+    end
+    return nothing
+end
+
+function is_stmt_in_task(task::ChildTask, ir::IRCode, position::Int)
+    for ibb in task.blocks
+        if position in ir.cfg.blocks[ibb].stmts
+            return true
+        end
+    end
+    return false
+end
+
+"""
     child_tasks(ir::IRCode) -> tasks::Vector{ChildTask}
 
 Discover immediate child tasks.
@@ -144,6 +171,11 @@ function detached_sub_cfg!(detacher::Int, ir::IRCode, visited)
                 end
             end
             error("unbalanced detach-reattach")
+            # TODO: handle missing reattach?
+            # This can happen when reattach nodes are replaced with unreachable.
+            # Currently, handling this case has not been required so far as we
+            # detect such tasks in `always_throws` and serial-project before the
+            # CFG is altered.
         end
         return true
     end
@@ -190,7 +222,8 @@ corresponding "fields" updated by these functions.
 
 # Arguments
 * `stmt`: an IR statement (e.g., an `Expr(:call, ...)`)
-* `on_value`: a function that accepts an `SSAValue` or `Argument`
+* `on_value`: a function that accepts an `SSAValue`, `Argument`, `SlotNumber`,
+  or `TypedSlot`.
 * `on_label`: a function that accepts a basic block label (e.g., `goto.label`
   of a `goto::GotoNode` statement)
 """
@@ -198,9 +231,7 @@ map_id(on_value, on_label, @nospecialize(stmt)) = map_id(on_value, on_label, on_
 
 function map_id(on_value, on_phi_label, on_goto_label, @nospecialize(stmt))
     recurse(@nospecialize x) = map_id(on_value, on_phi_label, on_goto_label, x)
-    if stmt isa SSAValue
-        on_value(stmt)
-    elseif stmt isa Argument
+    if stmt isa Union{SSAValue,Argument,SlotNumber,TypedSlot}
         on_value(stmt)
     elseif stmt isa GotoNode
         GotoNode(on_goto_label(stmt.label))
@@ -347,7 +378,7 @@ function foreach_def(
         acc.x &= c
         foreach_id(identity, inst) do v
             if v isa SSAValue
-                c && push!(worklist, i)
+                c && push!(worklist, v.id)
             else
                 acc.x &= f(v)
             end
@@ -371,95 +402,6 @@ function foreach_assigned_pair(f, xs::Array)
             f(i, xs[i])
         end
     end
-end
-
-"""
-    for_each_statement_in_each_block(ir) do foreach_statement, ibb, bb
-        # use bb
-        foreach_statement() do insert_position, stmt
-            # use stmt
-        end
-    end
-
-Iterate over basic blocks and statements including inserted nodes in the correct order.
-"""
-function for_each_statement_in_each_block(bb_user, ir::IRCode)
-    new_nodes_info = ir.new_nodes.info
-    indices = sortperm(
-        new_nodes_info;
-        alg = Sort.DEFAULT_STABLE,
-        by = nni -> (nni.pos, nni.attach_after),
-    )
-    order = Order.By() do i
-        if i isa NewNodeInfo
-            nni = i
-        else
-            nni = new_nodes_info[i]
-        end
-        (nni.pos, nni.attach_after)
-    end
-    hi = length(indices)
-    lo::Int = 1
-    for (ibb, bb) in enumerate(ir.cfg.blocks)
-        bb_user(ibb, bb) do stmt_user
-            for i in bb.stmts
-                nni1 = NewNodeInfo(i, false)
-                nni2 = NewNodeInfo(i, true)
-                before = searchsorted(indices, nni1, lo, hi, order)
-                after = searchsorted(indices, nni2, last(before) + 1, hi, order)
-                lo = last(after) + 1
-                for j in before
-                    stmt = ir.new_nodes.stmts[indices[j]]
-                    stmt_user(stmt.idx + length(ir.stmts), stmt)
-                end
-                stmt_user(i, ir.stmts[i])
-                for j in after
-                    stmt = ir.new_nodes.stmts[indices[j]]
-                    stmt_user(stmt.idx + length(ir.stmts), stmt)
-                end
-            end
-        end
-    end
-end
-
-"""
-    insert_new_nodes(ir::IRCode) -> ir′::IRCode
-
-Process `ir.new_nodes` and create an equivalent `ir′` such that `ir′.new_nodes` is empty.
-Return `ir` as-is if `ir.new_node)` is already empty.  It differs from `compact!(ir)` in
-that it does not perform any DCE.
-"""
-function insert_new_nodes(ir::IRCode)
-    isempty(ir.new_nodes.stmts.inst) && return ir
-    stmts = InstructionStream(length(ir.stmts) + length(ir.new_nodes.stmts))
-    ssachangemap = zeros(Int, length(stmts))
-    bbstarts = zeros(Int, length(ir.cfg.blocks))
-    bbstops = zeros(Int, length(ir.cfg.blocks))
-    newpos::Int = 1
-    for_each_statement_in_each_block(ir) do foreach_statement, ibb, _bb
-        bbstarts[ibb] = newpos
-        foreach_statement() do idx, stmt
-            stmts[newpos] = stmt
-            ssachangemap[idx] = newpos
-            newpos += 1
-        end
-        bbstops[ibb] = newpos - 1
-    end
-    @assert all(>(0), ssachangemap)
-
-    on_value(v::SSAValue) = SSAValue(ssachangemap[v.id])
-    on_value(v::Argument) = v
-    for i in 1:length(stmts)
-        stmts.inst[i] = map_id(on_value, identity, stmts.inst[i])
-    end
-
-    blocks = BasicBlock[
-        BasicBlock(bb, StmtRange(bbstarts[i], bbstops[i]))
-        for (i, bb) in enumerate(ir.cfg.blocks)
-    ]
-    popfirst!(bbstarts)
-    cfg = CFG(blocks, bbstarts)
-    return IRCode(ir, stmts, cfg, NewNodeStream())
 end
 
 function empty_ircode(ir::IRCode, len::Int)
@@ -538,7 +480,28 @@ function _fixup_linetable!(linetable::Vector{LineInfoNode})
     return indexmap
 end
 
-function allocate_blocks!(ir::IRCode, statement_positions)
+"""
+    allocate_new_blocks!(ir::IRCode, statement_positions) -> info
+
+Create new "singleton" basic blocks (i.e., it contains a single instruction)
+before `statement_positions`.  This function adds `2 * length(statement_positions)`
+blocks; i.e., `length(statement_positions)` blocks for the new singleton basic
+blocks and the remaining `length(statement_positions)` blocks for the basic
+block containing the instructions starting at each `statement_positions`.  This
+function expects that `statement_positions` is sorted.
+
+Note that this function does not wire up the CFG for newly created BBs. It just
+inserts the dummy `GotoNode(0)` at the end of the new singleton BBs and the BB
+_before_ (in terms of `ir.cfg.bocks`) it.  The predecessors of the BB just
+before the newly added singleton BB and the successors of the BB just after the
+newly added singleton BB are re-wired.  See `allocate_gotoifnot_sequence!` for
+an example for creating a valid CFG.
+
+The returned object `info` can be passed to `foreach_allocated_new_block` for
+iterating over allocated basic blocks.  An indexable object `info.ssachangemap`
+can be used for mapping old SSA values to the new locations.
+"""
+function allocate_new_blocks!(ir::IRCode, statement_positions)
     @assert issorted(statement_positions)
     ssachangemap = Vector{Int}(undef, length(ir.stmts) + length(ir.new_nodes.stmts))
     let iold = 1, inew = 1
@@ -711,32 +674,39 @@ function allocate_blocks!(ir::IRCode, statement_positions)
     return (; target_blocks, block_to_positions, ssachangemap, bbchangemap)
 end
 
+"""
+    allocate_new_blocks!(ir::IRCode, statement_positions) -> info
+
+Insert a new basic block before each `statement_positions` and a `GotoIfNot`
+that jumps over the newly added BB.  Unlike `allocate_new_blocks!`, this
+function results in an IR with valid CFG.
+"""
 function allocate_gotoifnot_sequence!(ir::IRCode, statement_positions)
     isempty(statement_positions) && return nothing
-    blocks = allocate_blocks!(ir, statement_positions)
+    blocks = allocate_new_blocks!(ir, statement_positions)
     (; target_blocks, block_to_positions, bbchangemap) = blocks
     for iold in target_blocks
         ibb = get(bbchangemap, iold - 1, 0) + 1
         for _ in block_to_positions[iold]
-            b1 = ir.cfg.blocks[ibb]
-            b2 = ir.cfg.blocks[ibb+1]
-            b3 = ir.cfg.blocks[ibb+2]
-            push!(b1.succs, ibb + 1, ibb + 2)
-            push!(b2.preds, ibb)
-            push!(b2.succs, ibb + 2)
-            push!(b3.preds, ibb, ibb + 1)
+            b0 = ir.cfg.blocks[ibb]
+            b1 = ir.cfg.blocks[ibb+1]
+            b2 = ir.cfg.blocks[ibb+2]
+            push!(b0.succs, ibb + 1, ibb + 2)
+            push!(b1.preds, ibb)
+            push!(b1.succs, ibb + 2)
+            push!(b2.preds, ibb, ibb + 1)
+            @assert ir.stmts.inst[last(b0.stmts)] === GotoNode(0)
             @assert ir.stmts.inst[last(b1.stmts)] === GotoNode(0)
-            @assert ir.stmts.inst[last(b2.stmts)] === GotoNode(0)
-            ir.stmts.inst[last(b1.stmts)] = GotoIfNot(false, ibb + 2)  # dummy
-            ir.stmts.inst[last(b2.stmts)] = GotoNode(ibb + 2)
+            ir.stmts.inst[last(b0.stmts)] = GotoIfNot(false, ibb + 2)  # dummy
+            ir.stmts.inst[last(b1.stmts)] = GotoNode(ibb + 2)
             ibb += 2
         end
     end
     return blocks
 end
 
-foreach_allocated_gotoifnot_block(_, ::Nothing) = nothing
-function foreach_allocated_gotoifnot_block(f, blocks)
+foreach_allocated_new_block(_, ::Nothing) = nothing
+function foreach_allocated_new_block(f, blocks)
     (; target_blocks, block_to_positions, bbchangemap) = blocks
     for iold in target_blocks
         inew = get(bbchangemap, iold - 1, 0)
@@ -788,30 +758,66 @@ function remove_stmt!(stmt::Instruction)
     stmt[:type] = Any
 end
 
-function resolve_callee(ir::IRCode, @nospecialize(inst))::Tuple{Any,Bool}
+"""
+    resolve_linear_chain(ir, v::Union{PiNode,SSAValue}) -> v′::Union{PiNode,SSAValue}
+
+Resolve simple chain of statements that are SSAValue or PiNode.
+"""
+function resolve_linear_chain end
+function resolve_linear_chain(ir::IRCode, v::PiNode)
+    n = v.val
+    if n isa SSAValue
+        return resolve_linear_chain(ir, n)
+    else
+        return v
+    end
+end
+function resolve_linear_chain(ir::IRCode, v::SSAValue)
+    v0 = v
+    while true
+        n = ir[v]
+        if n isa PiNode
+            n = n.val
+        end
+        if n isa SSAValue
+            v = n
+        else
+            break
+        end
+        v === v0 && error("cycle detected")
+    end
+    return v
+end
+
+# Ref: abstract_eval_special_value
+function resolve_special_value(@nospecialize(v))
+    if v isa GlobalRef
+        isdefined(v.mod, v.name) || return nothing, false
+        v = getfield(v.mod, v.name)
+    elseif v isa QuoteNode
+        return v.value, true
+    end
+    return v, true
+end
+
+resolve_ssavalue(ir::IRCode, v::SSAValue) = resolve_ssavalue(ir.stmts.inst, v)
+function resolve_ssavalue(code::Vector{Any}, v::SSAValue)
+    v0 = v
+    while v isa SSAValue
+        v = code[v.id]
+        v === v0 && error("cycle detected")
+    end
+    return v
+end
+
+function resolve_callee(code::Vector{Any}, @nospecialize(inst))::Tuple{Any,Bool}
     isexpr(inst, :call) || return nothing, false
     isempty(inst.args) && return nothing, false
     f, = inst.args
-    f0 = f
-    while f isa SSAValue
-        f = ir[f]
-        f === f0 && error("cycle detected")
+    if f isa SSAValue
+        f = resolve_ssavalue(code, f)
     end
-    if f isa GlobalRef
-        isdefined(f.mod, f.name) || return nothing, false
-        f = getfield(f.mod, f.name)
-    end
-    return f, true
-end
-
-function constructs(stmt::Instruction, @nospecialize(T::Type))
-    inst = stmt[:inst]
-    if isexpr(inst, :new)
-        return get(inst.args, 1, nothing) <: T
-    elseif isexpr(inst, :call)
-        return widenconst(stmt[:type]) <: T
-    end
-    return false
+    return resolve_special_value(f)
 end
 
 function calls(inst, r::GlobalRef, nargs::Int)
@@ -867,7 +873,7 @@ function always_throws(ir::IRCode, task::ChildTask)
     visited = falses(length(ir.cfg.blocks))
     detacher = block_for_inst(ir, task.detach)
     for i in task.reattaches
-        # If all non-terminator instructions just beofer all reattach nodes have
+        # If all non-terminator instructions just before all reattach nodes have
         # `Union{}`, this task always throw.  Handle the case where there is
         # only one terminator instruction in a BB using `foreach_ancestor`:
         throws = RefValue(true)
@@ -902,7 +908,7 @@ end
 function is_trivial_for_spawn(@nospecialize(inst))
     if isterminator(inst)
         return true
-    elseif inst isa Union{PhiNode,PhiCNode,UpsilonNode,Nothing}
+    elseif inst isa Union{PhiNode,PhiCNode,UpsilonNode,PiNode,Nothing}
         return true
     elseif inst isa Expr
         if is_meta_expr_head(inst.head)
@@ -1026,10 +1032,10 @@ Mainly operates on task output variables.
 """
 function early_tapir_pass!(ir::IRCode)
     is_sequential(ir) && return ir, false
+    @timeit "Lower task output" ir = lower_tapir_output!(ir)
     @timeit "Check task output" ir, racy = check_tapir_race!(ir)
     racy && return ir, racy
     @timeit "Fixup syncregion" ir = fixup_syncregion_phic!(ir)
-    @timeit "Lower task output" ir = lower_tapir_output!(ir)
     return ir, racy
 end
 
@@ -1056,7 +1062,9 @@ end
     fixup_syncregion_phic!(ir::IRCode) -> ir′
 """
 function fixup_syncregion_phic!(ir::IRCode)
-    ir = insert_new_nodes(ir)
+    if !isempty(ir.new_nodes.stmts.inst)
+        ir = compact!(ir)
+    end
 
     for bb in ir.cfg.blocks
         isync = last(bb.stmts)
@@ -1072,20 +1080,214 @@ function fixup_syncregion_phic!(ir::IRCode)
     return ir
 end
 
+foreach_task_output_load(f::F, ir::IRCode) where {F} =
+    foreach_task_output_load(f, ir.stmts.inst)
+
+function foreach_task_output_load(f, code::Vector{Any})
+    Tapir = tapir_module()
+    Tapir isa Module || return
+    isdefined(Tapir, :_load) || return  # avoid error while bootstrapping
+
+    for (i, inst) in pairs(code)
+        if isexpr(inst, :(=))
+            _, call = inst.args
+        else
+            call = inst
+        end
+        callee, = resolve_callee(code, call)
+        if callee === Tapir._load && length(call.args) == 3
+            f(i, inst, call.args)
+        end
+    end
+end
+
+foreach_task_output_decl(f::F, ir::IRCode) where {F} =
+    foreach_task_output_decl(f, ir.stmts.inst)
+function foreach_task_output_decl(f, code::Vector{Any})
+    for (i, inst) in pairs(code)
+        isexpr(inst, :task_output) || continue
+        f(i, inst.args[1])
+    end
+end
+
+"""
+    task_output_slots(ci::CodeInfo, code::Vector{Any}) -> slotids::BitSet
+
+Return a set of slot IDs that should be kept in the `IRCode` genrated by
+slot2reg.  These slots are processed later in `lower_tapir_output!`.
+"""
+function task_output_slots(::CodeInfo, code::Vector{Any})
+    outputs = BitSet()
+    foreach_task_output_load(code) do _i, _inst, (_f, out, _name)
+        if out isa SSAValue
+            out = resolve_ssavalue(code, out)
+        end
+        if out isa Union{SlotNumber,TypedSlot}
+            push!(outputs, slot_id(out))
+        end
+    end
+    foreach_task_output_decl(code) do _, out
+        if out isa Union{SlotNumber,TypedSlot}
+            push!(outputs, slot_id(out))
+        end
+    end
+    return outputs
+end
+
 """
     lower_tapir_output!(ir::IRCode) -> ir′
 
-Lower output variables marked by `Tapir.Output` as Upsilon nodes.
-This removes the Phi nodes forbidden by Tapir.
+Lower task output slots.
+"""
+function lower_tapir_output!(ir::IRCode)
+    ir = lower_tapir_task_output!(ir)
+    ir = lower_tapir_phic_output!(ir)
+    return ir
+end
+
+"""
+    lower_tapir_task_output!(ir::IRCode) -> ir′
+
+Lower task outputs marked by `Tapir.@output`.
+"""
+function lower_tapir_task_output!(ir::IRCode)
+    Tapir = tapir_module()
+    Tapir isa Module || return ir
+
+    # TODO: make it work without compaction?
+    if !isempty(ir.new_nodes.stmts.inst)
+        ir = compact!(ir)
+    end
+
+    # TODO: turn slots into PhiC/Upsilon nodes if possible?
+
+    outputinfo = IdDict{Int,Tuple{Symbol,LineNumberNode}}()
+    foreach_task_output_decl(ir) do i, out
+        if out isa Union{SlotNumber,TypedSlot}
+            stmt = ir.stmts[i]
+            _, qnode, lineno = stmt[:inst].args
+            name = (qnode::QuoteNode).value::Symbol
+            lineno::LineNumberNode
+            outputinfo[slot_id(out)] = (name, lineno)
+            remove_stmt!(stmt)
+        end
+    end
+
+    isempty(outputinfo) && return ir
+
+    # Determine the type of each slot
+    slottypes = IdDict{Int,Type}()      # slot id -> type
+    stores = IdDict{Int,Vector{Int}}()  # slot id -> statement positions
+    loaded_slots = BitSet()
+    loaded_positions = BitSet()
+    for i in 1:length(ir.stmts)
+        stmt = ir.stmts[i]
+        inst = stmt[:inst]
+
+        if (
+            isexpr(inst, :(=)) &&
+            begin
+                lhs, rhs = inst.args
+                lhs isa Union{SlotNumber,TypedSlot}
+            end &&
+            haskey(outputinfo, slot_id(lhs))
+        )
+            t0 = get(slottypes, slot_id(lhs), Union{})
+            t1 = widenconst(stmt[:type])
+            slottypes[slot_id(lhs)] = Union{t0,t1}
+            push!(get!(() -> Int[], stores, slot_id(lhs)), i)
+            inst = rhs
+        end
+
+        foreach_id(identity, inst) do out
+            if out isa Union{SlotNumber,TypedSlot}
+                if haskey(outputinfo, slot_id(out))
+                    push!(loaded_positions, i)
+                    push!(loaded_slots, slot_id(out))
+                end
+            end
+        end
+    end
+
+    unused = setdiff!(BitSet(keys(stores)), loaded_slots)
+    for oid in unused
+        for i in stores[oid]
+            stmt = ir.stmts[i]
+            _, rhs = stmt[:inst].args
+            stmt[:inst] = rhs
+        end
+    end
+    isempty(loaded_slots) && return ir
+
+    # Insert Refs
+    outputrefs = IdDict{Int,SSAValue}()
+    for oid in keys(outputinfo)
+        T = get(slottypes, oid, Union{})
+        R = Tapir.UndefableRef{T}
+        alloc_pos = 1   # [^alloca-position]
+        ref = insert_node!(ir, alloc_pos, NewInstruction(Expr(:new, R), R))
+        outputrefs[oid] = ref
+        setset = NewInstruction(
+            Expr(:call, setfield!, ref, QuoteNode(:set), QuoteNode(false)),
+            Any,
+        )
+        insert_node!(ir, alloc_pos, setset)
+    end
+
+    # Insert loads
+    for i in loaded_positions
+        stmt = ir.stmts[i]
+        stmt[:inst] = map_id(identity, stmt[:inst]) do out
+            if out isa Union{SlotNumber,TypedSlot}
+                ref = get(outputrefs, slot_id(out), nothing)
+                if ref isa SSAValue
+                    isset_ex = Expr(:call, GlobalRef(Core, :getfield), ref, QuoteNode(:set))
+                    isset = insert_node!(ir, i, NewInstruction(isset_ex, Bool))
+                    name, = outputinfo[slot_id(out)]
+                    undefcheck = Expr(:throw_undef_if_not, name, isset)
+                    insert_node!(ir, i, NewInstruction(undefcheck, Any))
+                    value_ex = Expr(:call, GlobalRef(Core, :getfield), ref, QuoteNode(:x))
+                    T = get(slottypes, slot_id(out), Union{})
+                    return insert_node!(ir, i, NewInstruction(value_ex, T))
+                end
+            end
+            return out
+        end
+    end
+
+    # Insert stores (that are loaded somewhere)
+    for oid in setdiff!(BitSet(keys(stores)), unused)
+        ref = outputrefs[oid]
+        for i in stores[oid]
+            stmt = ir.stmts[i]
+            _, rhs = stmt[:inst].args
+            stmt[:inst] = rhs
+
+            value = SSAValue(i)
+            ex = Expr(:call, GlobalRef(Core, :setfield!), ref, QuoteNode(:x), value)
+            insert_node!(ir, i, NewInstruction(ex, Any), true)
+            ex = Expr(:call, GlobalRef(Core, :setfield!), ref, QuoteNode(:set), true)
+            insert_node!(ir, i, NewInstruction(ex, Any), true)
+        end
+    end
+
+    return ir
+end
+
+"""
+    lower_tapir_phic_output!(ir::IRCode) -> ir′
+
+Lower output slots marked by `Tapir._load` using Upsilon and PhiC nodes.
+
+This pass relies on the frontend to use the slots in write-many-load-once
+manner.  TODO: verify?
 
 It transforms
 
     ...
-        %ref = Tapir.Output{%name}()
+        slot = %value
     ...
-        %ref.x = %value
-    ...
-        %out = %ref.x
+        %out = Tapir._load(slot, %name)
 
 to
 
@@ -1102,84 +1304,197 @@ to
     #ok
         %out = φᶜ(%store)
 """
-function lower_tapir_output!(ir::IRCode)
+function lower_tapir_phic_output!(ir::IRCode)
     Tapir = tapir_module()
     Tapir isa Module || return ir
     Base = Main.Base::Module
 
     # TODO: make it work without compaction?
-    ir = insert_new_nodes(ir)
+    if !isempty(ir.new_nodes.stmts.inst)
+        ir = compact!(ir)
+    end
 
     outputs = BitSet()
-    for i in 1:length(ir.stmts)
-        constructs(ir.stmts[i], Tapir.Output) && push!(outputs, i)
+    loads = Tuple{Int,Int}[]  # pairs of (load position, slot id)
+    load_positions = BitSet()
+    output_names = Vector{Any}(undef, length(ir.stmts)) # big enough since #stmts >= #slots
+    foreach_task_output_load(ir) do i, _inst,  (_f, out, name)
+        if out isa SSAValue
+            # Since the frontend ensures that this slot is read once, resolving
+            # a linear chain of SSA values and Pi nodes is equivalent to
+            # deferring the load (which is fine).
+            out = resolve_linear_chain(ir, out)
+            if out isa SSAValue
+                out = ir[out]
+            end
+        end
+        if out isa Union{SlotNumber,TypedSlot}
+            push!(outputs, slot_id(out))
+            push!(loads, (i, slot_id(out)))
+            push!(load_positions, i)
+            output_names[slot_id(out)] = name
+        end
     end
-    isempty(outputs) && return ir
+    maxslotid = isempty(outputs) ? 0 : maximum(outputs)
 
-    # Handle stores
-    storemap = undefmap = nothing
+    # Find stores, isdefined and escapes:
+    stores = Tuple{Int,Int}[]  # pairs of (store position, slot id)
+    defchecks = Vector{Vector{SSAValue}}(undef, maxslotid)
+    deletelater = Int[]
     for i in 1:length(ir.stmts)
         stmt = ir.stmts[i]
         inst = stmt[:inst]
-        f, = resolve_callee(ir, inst)
-        f === setfield! || f === Base.setproperty! || continue
-        _, r, _, value = inst.args
-        r isa SSAValue && r.id in outputs || continue
+        if (
+            isexpr(inst, :(=)) &&
+            begin
+                lhs, _ = inst.args
+                lhs isa Union{SlotNumber,TypedSlot}
+            end &&
+            slot_id(lhs) in outputs
+        )
+            push!(stores, (i, slot_id(lhs)))
+            continue
+        end
 
-        if storemap === nothing
-            storemap = Vector{Vector{Any}}(undef, length(ir.stmts))
-            undefmap = Vector{Vector{Any}}(undef, length(ir.stmts))
+        i in load_positions && continue
+
+        # Record SSA values that would not be used once this pass is done:
+        let out = inst
+            if out isa Union{SSAValue,PiNode}
+                # The way SSA/Pi are resolved should match with the escape check
+                # below (i.e., to ensure that these instructions are indeed not
+                # used).
+                out = resolve_linear_chain(ir, out)
+                if out isa SSAValue
+                    out = ir[out]
+                end
+            end
+            if out isa Union{SlotNumber,TypedSlot} && slot_id(inst) in outputs
+                push!(deletelater, i)
+                continue
+            end
         end
-        if !isassigned(storemap, r.id)
+
+        if (
+            isexpr(inst, :isdefined) &&
+            begin
+                slot, = inst.args
+                slot isa Union{SlotNumber,TypedSlot}
+            end &&
+            slot_id(slot) in outputs
+        )
+            if isassigned(defchecks, slot_id(slot))
+                ssas = defchecks[slot_id(slot)]
+            else
+                ssas = defchecks[slot_id(slot)] = SSAValue[]
+            end
+            push!(ssas, SSAValue(i))
+            continue
+        end
+
+        # Handle escaped slots:
+        #
+        # The frontend does not produce escaping task outputs.  But it's
+        # possible (i.e., a valid Julia IR up to this point) that the output
+        # variables to be captured (e.g., due to metaprogramming).  Since
+        # loading slot other than well-defined locations marked by `Tapir._load`
+        # is potentially racy, let's insert a throw if we detect an escape.
+        escaped = RefValue(false)
+        local escaped_variable  # TODO: handle multiple variables?
+        foreach_id(identity, inst) do out
+            if out isa SSAValue
+                out = resolve_linear_chain(ir, out)
+                if out isa SSAValue
+                    out = ir[out]
+                end
+            end
+            if out isa Union{SlotNumber,TypedSlot}
+                if slot_id(out) in outputs
+                    escaped.x = true
+                    escaped_variable = output_names[slot_id(out)]
+                end
+            end
+        end
+        if escaped.x
+            stmt[:inst] = nothing
+            if escaped_variable isa SSAValue
+                th = Expr(:call, Tapir.escaping_task_output_error)
+            else
+                th = Expr(:call, Tapir.escaping_task_output_error, escaped_variable)
+            end
+            insert_node!(ir, i, NewInstruction(th, Any))
+            # Not using `Union{}` so that we can preserve CFG.
+        end
+    end
+
+    for i in deletelater
+        remove_stmt!(ir.stmts[i])
+    end
+
+    isempty(outputs) && return ir
+
+    # Handle stores
+    storemap = Vector{Vector{Any}}(undef, maxslotid)
+    undefmap = Vector{Vector{Any}}(undef, maxslotid)
+    for (i, oid) in stores
+        oid in outputs || continue
+        stmt = ir.stmts[i]
+        _lhs, value = stmt[:inst].args
+
+        if !isassigned(storemap, oid)
             newup = NewInstruction(UpsilonNode(QuoteNode(true)), Const(true))
-            undefinit = insert_node!(ir, 1, newup)
-            undefs = undefmap[r.id] = Any[undefinit]
-            stores = storemap[r.id] = Any[]
+            undefinit = insert_node!(
+                ir,
+                1, # [^alloca-position]
+                newup,
+            )
+            undefs = undefmap[oid] = Any[undefinit]
+            stores = storemap[oid] = Any[]
         else
-            undefs = undefmap[r.id]
-            stores = storemap[r.id]
+            undefs = undefmap[oid]
+            stores = storemap[oid]
         end
+
+        # Reuse this statement to keep `MethodMatchInfo` (for inlining):
+        stmt[:inst] = value
+        ssavalue = SSAValue(i)
+
+        newinst = NewInstruction(UpsilonNode(ssavalue), stmt[:type])
+        ups = insert_node!(ir, i, newinst, true)
+        push!(stores, ups)
 
         newinst = NewInstruction(UpsilonNode(QuoteNode(false)), Const(false))
         ups = insert_node!(ir, i, newinst, true)
         push!(undefs, ups)
-
-        newinst = NewInstruction(UpsilonNode(value), stmt[:type])
-        ups = insert_node!(ir, i, newinst, true)
-        push!(stores, ups)
     end
-    storemap === nothing && return ir
 
-    output_names = Vector{Symbol}(undef, length(ir.stmts))
-    for i in outputs
-        name = Symbol("?")
-        Output = widenconst(ir.stmts.type[i])
-        if Output <: Tapir.Output
-            name = try
-                Output.parameters[1]
-            catch
-                name
+    for oid in outputs
+        isassigned(defchecks, oid) || continue
+        for ssa in defchecks[oid]
+            # Duplicate upsilons to respect the load-once semantics:
+            undefs = Iterators.map(undefmap[oid]) do ssa::SSAValue
+                stmt = stmt_at(ir, ssa.id)
+                ups = stmt[:inst]::UpsilonNode
+                typ = stmt[:type]
+                insert_node!(ir, insert_pos(ir, ssa.id), NewInstruction(ups, typ))
             end
+            undefs = collect(Any, undefs)
+            undefssa = insert_node!(ir, ssa.id, NewInstruction(PhiCNode(undefs), Bool))
+            ir[ssa] = Expr(:call, GlobalRef(Intrinsics, :not_int), undefssa)
         end
-        output_names[i] = name
     end
 
     # Handle loads
-    undef_checks = Tuple{Int,Symbol,SSAValue}[]
-    for i in 1:length(ir.stmts)
-        stmt = ir.stmts[i]
-        inst = stmt[:inst]
-        f, = resolve_callee(ir, inst)
-        f === getfield || f === Base.getproperty || continue
-        _, r, = inst.args
-        r isa SSAValue && r.id in outputs || continue
+    undef_checks = Tuple{Int,Any,SSAValue}[]
+    for (i, oid) in loads
+        oid in outputs || continue
 
-        # Replace getfield with PhiC
-        ir.stmts.inst[i] = PhiCNode(storemap[r.id])
+        # Replace load with PhiC
+        ir.stmts.inst[i] = PhiCNode(storemap[oid])
 
         # Preparing for undef check
-        name = output_names[r.id]
-        undefs = undefmap[r.id]
+        name = output_names[oid]
+        undefs = undefmap[oid]
         undefssa = insert_node!(ir, i, NewInstruction(PhiCNode(undefs), Bool))
         push!(undef_checks, (i, name, undefssa))
     end
@@ -1187,7 +1502,7 @@ function lower_tapir_output!(ir::IRCode)
     # Insert throw on undef:
     allocated = allocate_gotoifnot_sequence!(ir, map(first, undef_checks))
     undef_checks_index = RefValue(0)
-    foreach_allocated_gotoifnot_block(allocated) do ibb
+    foreach_allocated_new_block(allocated) do ibb
         # `ibb` is the index of BB inserted at the use position `undef_checks[i][1]`
         i = undef_checks_index.x += 1
         (_, name, undefssa) = undef_checks[i]
@@ -1201,7 +1516,7 @@ function lower_tapir_output!(ir::IRCode)
         # If defined (not undef), skip over the throw:
         ir.stmts.inst[last(b0.stmts)] = GotoIfNot(undefssa, ibb + 2)
 
-        newex_ex = Expr(:call, GlobalRef(Base, :UndefVarError), QuoteNode(name))
+        newex_ex = Expr(:call, GlobalRef(Base, :KeyError), name)
         newex = insert_node!(ir, last(b1.stmts), NewInstruction(newex_ex, Any))
         throw_ex = Expr(:call, GlobalRef(Base, :throw), newex)
         insert_node!(ir, last(b1.stmts), NewInstruction(throw_ex, Union{}))
@@ -1216,6 +1531,9 @@ function lower_tapir_output!(ir::IRCode)
 
     return ir
 end
+# [^alloca-position]: TODO: The placement of the allocations of task output is not
+# optimal.  Ideally, we should use the inner-most `Expr(:syncregion)` that
+# dominates all loads.
 
 """
     check_tapir_race!(ir::IRCode) -> (ir′::IRCode, racy::Bool)
@@ -1254,7 +1572,7 @@ best thing we can do is to insert helpful errors in the generated code; which is
 a nonlocal transformation.  Since `slot2reg` is a delicate chain of processing
 on half-constructed `IRCode`, it is more convenient and concise to do this after
 `slot2reg`.  Furthermore, since the promotion checking works by "attempting" to
-do `slot2reg` (i.e., requires IDF) anyway, actualy doing `slot2reg` first is
+do `slot2reg` (i.e., requires IDF) anyway, actually doing `slot2reg` first is
 equivalent.  Additionally, separating this out as a pass makes it easy to
 short-circuit `run_passes`.
 """
@@ -1262,10 +1580,12 @@ function check_tapir_race!(ir::IRCode)
     Tapir = tapir_module()
     Tapir isa Module || return ir, false
 
-    ir = insert_new_nodes(ir)
+    if !isempty(ir.new_nodes.stmts.inst)
+        ir = compact!(ir)
+    end
 
+    local tasks, throw_if_uses
     racy = false
-    throw_if_uses = nothing
     for (ibb, bb) in pairs(ir.cfg.blocks)
         det = ir.stmts.inst[bb.stmts[end]]
         det isa DetachNode || continue
@@ -1274,20 +1594,35 @@ function check_tapir_race!(ir::IRCode)
             phi = ir.stmts.inst[iphi]
             phi isa PhiNode || continue
             # Racy Phi node found
-            racy = true
-            # Insert a throw after "store" (def in child task):
-            for (i, e) in pairs(phi.edges)
-                e == ibb && continue  # skip the continue edge
-                isassigned(phi.values, i) && continue  # impossible?
-                v = phi.values[i]
-                v isa SSAValue || continue  # let's handle this on "load" side
-                th = Expr(:call, Tapir.racy_store, v)
-                insert_node!(ir, v.id, NewInstruction(th, Union{}), true)
-            end
-            # Insert a throw before "load" (use in continuation):
-            if throw_if_uses === nothing
+            if !racy
+                tasks = child_tasks(ir)
                 throw_if_uses = BitSet()
             end
+            racy = true
+            # Insert a throw after "store" (def in child task):
+            task = task_by_detach(tasks, bb.stmts[end])::ChildTask
+            for (i, e) in pairs(phi.edges)
+                e == ibb && continue  # skip the continue edge
+                isassigned(phi.values, i) || continue  # impossible?
+                v = phi.values[i]
+                v isa SSAValue || continue  # constant? let's handle this on "load" side
+                foreach_def(v, ir) do stmt
+                    if stmt isa Instruction
+                        is_stmt_in_task(task, ir, stmt.idx) || return false # break
+                        stmt[:inst] isa Union{PhiNode,PiNode} && return true  # keep going
+
+                        # This instruction is in the task and is not a branch.
+                        # Insert the racy store error:
+                        th = Expr(:call, Tapir.racy_store, SSAValue(stmt.idx))
+                        pos = insert_pos(ir, stmt.idx)
+                        attach_after = pos == stmt.idx
+                        insert_node!(ir, pos, NewInstruction(th, Any), attach_after)
+                        # Not using `Union{}` so that we can preserve CFG.
+                    end
+                    return false # break
+                end
+            end
+            # Insert a throw before "load" (use in continuation):
             push!(throw_if_uses, iphi)
         end
     end
@@ -1302,14 +1637,16 @@ function check_tapir_race!(ir::IRCode)
                     iterm = bb.stmts[end]
                     attach_after = !isterminator(ir.stmts.inst[iterm])
                     th = Expr(:call, Tapir.racy_load, v)
-                    insert_node!(ir, iterm, NewInstruction(th, Union{}), attach_after)
+                    insert_node!(ir, iterm, NewInstruction(th, Any), attach_after)
+                    # Not using `Union{}` so that we can preserve CFG.
                 end
             end
         else
             foreach_id(identity, inst) do v
                 if v isa SSAValue && v.id in throw_if_uses
                     th = Expr(:call, Tapir.racy_load, v)
-                    insert_node!(ir, i, NewInstruction(th, Union{}))
+                    insert_node!(ir, i, NewInstruction(th, Any))
+                    # Not using `Union{}` so that we can preserve CFG.
                 end
             end
         end
@@ -1613,7 +1950,7 @@ function outline_child_task!(task::ChildTask, ir::IRCode)
     return result
 end
 # TODO: Calling this at each recurse of `lower_tapir_tasks!` is not great
-# (quadraic in depth). Maybe keep the stack of changemaps and renumber lazily?
+# (quadratic in depth). Maybe keep the stack of changemaps and renumber lazily?
 
 function renumber_subtasks!(task::ChildTask, ssachangemap, labelchangemap)
     subtasks = task.subtasks
@@ -1780,32 +2117,34 @@ function lower_tapir_tasks!(ir::IRCode, tasks::Vector{ChildTask}, interp::Abstra
     #         %phic = φᶜ(%upsilon, ...)
     #     ...
 
-    # Vector of 4-tuple (use position, original def potision, type, ref SSA value):
+    # Vector of 4-tuple (use position, original def position, type, ref SSA value):
     task_outputs = Tuple{Int,Int,Type,SSAValue}[]
     output_users = BitSet()
-    for i in 1:length(ir.stmts)
-        foreach_id(identity, ir.stmts[i][:inst]) do v
+    for iuse in 1:length(ir.stmts)
+        foreach_id(identity, ir.stmts[iuse][:inst]) do v
             if v isa SSAValue
                 tbl = get(tobeloaded, v.id, nothing)
                 if tbl !== nothing
-                    push!(output_users, i)
+                    push!(output_users, iuse)
                     T, ref = tbl
-                    push!(task_outputs, (i, v.id, T, ref))
+                    push!(task_outputs, (iuse, v.id, T, ref))
                 end
             end
         end
     end
+    ir1 = copy(ir)
 
     undef_checks = allocate_gotoifnot_sequence!(ir, map(first, task_outputs))
     original_outputs = BitSet()
-    output_upsilon = zeros(Int, length(ir.stmts))
-    output_value = zeros(Int, length(ir.stmts))
-    output_isset = zeros(Int, length(ir.stmts))
+    output_upsilon = IdDict{Tuple{Int,Int},Int}()  # (use pos, def pos) -> pos
+    output_value = IdDict{Tuple{Int,Int},Int}()
+    output_isset = IdDict{Tuple{Int,Int},Int}()
     output_index = RefValue(0)
-    foreach_allocated_gotoifnot_block(undef_checks) do ibb
+    foreach_allocated_new_block(undef_checks) do ibb
         # `ibb` is the index of BB inserted at the use position `task_outputs[i][1]`
         i = output_index.x += 1
-        (_, iout, T, ref) = task_outputs[i]
+        (iuse, iout, T, ref) = task_outputs[i]
+        iuse = undef_checks.ssachangemap[iuse]
         iout = undef_checks.ssachangemap[iout]
         ref = SSAValue(undef_checks.ssachangemap[ref.id])
 
@@ -1824,30 +2163,31 @@ function lower_tapir_tasks!(ir::IRCode, tasks::Vector{ChildTask}, interp::Abstra
 
         ups = insert_node!(ir, last(b1.stmts), NewInstruction(UpsilonNode(load), T))
 
-        output_upsilon[iout] = ups.id
-        output_value[iout] = load.id
-        output_isset[iout] = isset.id
+        output_upsilon[iuse, iout] = ups.id
+        output_value[iuse, iout] = load.id
+        output_isset[iuse, iout] = isset.id
         push!(original_outputs, iout)
     end
     # TODO: check that all getfield calls are dominated by sync!
 
-    for i in output_users
-        stmt = ir.stmts[undef_checks.ssachangemap[i]]
+    for iuse in output_users
+        iuse = undef_checks.ssachangemap[iuse]
+        stmt = ir.stmts[iuse]
         isphic = stmt[:inst] isa PhiCNode
         stmt[:inst] = map_id(identity, stmt[:inst]) do v
             if v isa SSAValue
                 if v.id in original_outputs
                     if isphic
-                        return SSAValue(output_upsilon[v.id])
+                        return SSAValue(output_upsilon[iuse, v.id])
                     else
                         # If the original use is not PhiC, it was used
                         # unconditionally; thus, we always load the value.
-                        println(stderr, "** tapir: icnomplte concversion to PhiC/Upsilon **")
+                        println(stderr, "** tapir: incomplete concversion to PhiC/Upsilon **")
                         # TODO: turn this into a proper verification pass
-                        oid = output_value[v.id]
+                        oid = output_value[iuse, v.id]
                         load = stmt_at(ir, oid)
                         newinst = NewInstruction(load[:inst], load[:type])
-                        return insert_node!(ir, insert_pos(ir, output_isset[v.id]), newinst)
+                        return insert_node!(ir, insert_pos(ir, output_isset[iuse, v.id]), newinst)
                     end
                 end
             end
@@ -1890,7 +2230,7 @@ end
 """
     opaque_closure_method_from_ssair(ir::IRCode) -> closure::Method
 
-Create an oaque `closure` from an SSA `ir`.
+Create an opaque `closure` from an SSA `ir`.
 """
 function opaque_closure_method_from_ssair(ir::IRCode)
     # TODO: more accurate module/functionloc detection
