@@ -108,15 +108,16 @@ include("workerpool.jl")
 include("pmap.jl")
 include("managers.jl")    # LocalManager and SSHManager
 
-function fib(N)
-    if N <= 1
-        return N
-    end
-    Tapir.@sync begin
-        Tapir.@spawn $x1 = fib(N - 1)
-        $x2 = fib(N - 2)
-    end
-    return x1 + x2
+function spawn!(tasks::TaskGroup, @nospecialize(f))
+    future = remotecall(f, procs()[2])
+    push!(tasks, future)
+    return nothing
+end
+
+Tapir.spawn! = spawn!
+
+function __init__()
+    init_parallel()
 end
 
 end
