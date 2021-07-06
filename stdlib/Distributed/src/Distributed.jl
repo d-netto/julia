@@ -108,7 +108,7 @@ include("workerpool.jl")
 include("pmap.jl")
 include("managers.jl")    # LocalManager and SSHManager
 
-function spawn!(tasks::TaskGroup, @nospecialize(f))
+function spawn!(tasks::Tapir.TaskGroup, @nospecialize(f))
     future = remotecall(f, procs()[2])
     push!(tasks, future)
     return nothing
