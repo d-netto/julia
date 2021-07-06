@@ -60,6 +60,7 @@ const TAGS = Any[
     Symbol, # IDDICT_TAG
     Symbol, # SHARED_REF_TAG
     ReturnNode, GotoIfNot,
+    ## ASK: are Symbols here only for capping the array length to 255?
     fill(Symbol, n_reserved_tags)...,
 
     (), Bool, Any, Bottom, Core.TypeofBottom, Type, svec(), Tuple{}, false, true, nothing,
@@ -1414,6 +1415,7 @@ function deserialize(s::AbstractSerializer, ::Type{UnionAll})
 end
 
 function deserialize(s::AbstractSerializer, ::Type{Task})
+    @show "IN TASK"
     t = Task(()->nothing)
     deserialize_cycle(s, t)
     t.code = deserialize(s)
