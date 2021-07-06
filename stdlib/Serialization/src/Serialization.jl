@@ -459,7 +459,6 @@ function serialize(s::AbstractSerializer, linfo::Core.MethodInstance)
 end
 
 function serialize(s::AbstractSerializer, oc::Core.OpaqueClosure)
-    # serialize_cycle(s, oc) && return
     writetag(s.io, OC_TAG)
     serialize(s, oc.captures)
     serialize(s, oc.isva)
@@ -1415,7 +1414,6 @@ function deserialize(s::AbstractSerializer, ::Type{UnionAll})
 end
 
 function deserialize(s::AbstractSerializer, ::Type{Task})
-    @show "IN TASK"
     t = Task(()->nothing)
     deserialize_cycle(s, t)
     t.code = deserialize(s)

@@ -108,13 +108,14 @@ include("workerpool.jl")
 include("pmap.jl")
 include("managers.jl")    # LocalManager and SSHManager
 
+# Is there a better place to put this?
 function spawn!(tasks::Tapir.TaskGroup, @nospecialize(f))
-    future = remotecall(f, procs()[2])
+    future = @spawn f()
     push!(tasks, future)
     return nothing
 end
 
-Tapir.spawn! = spawn!
+Tapir.spawn!(tasks, f) = spawn!(tasks, f)
 
 function __init__()
     init_parallel()
