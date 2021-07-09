@@ -1223,15 +1223,15 @@ function lower_tapir_task_output!(ir::IRCode)
     outputrefs = IdDict{Int,SSAValue}()
     for oid in keys(outputinfo)
         T = get(slottypes, oid, Union{})
-        R = Tapir.UndefableRef{T}
+        R = Tapir.TFuture
         alloc_pos = 1   # [^alloca-position]
         ref = insert_node!(ir, alloc_pos, NewInstruction(Expr(:new, R), R))
         outputrefs[oid] = ref
-        setset = NewInstruction(
-            Expr(:call, setfield!, ref, QuoteNode(:set), QuoteNode(false)),
-            Any,
-        )
-        insert_node!(ir, alloc_pos, setset)
+        # setset = NewInstruction(
+        #     Expr(:call, setfield!, ref, QuoteNode(:set), QuoteNode(false)),
+        #     Any,
+        # )
+        # insert_node!(ir, alloc_pos, setset)
     end
 
     # Insert loads
@@ -1241,12 +1241,12 @@ function lower_tapir_task_output!(ir::IRCode)
             if out isa Union{SlotNumber,TypedSlot}
                 ref = get(outputrefs, slot_id(out), nothing)
                 if ref isa SSAValue
-                    isset_ex = Expr(:call, GlobalRef(Core, :getfield), ref, QuoteNode(:set))
-                    isset = insert_node!(ir, i, NewInstruction(isset_ex, Bool))
+                    # isset_ex = Expr(:call, GlobalRef(Core, :getfield), ref, QuoteNode(:set))
+                    # isset = insert_node!(ir, i, NewInstruction(isset_ex, Bool))
                     name, = outputinfo[slot_id(out)]
-                    undefcheck = Expr(:throw_undef_if_not, name, isset)
-                    insert_node!(ir, i, NewInstruction(undefcheck, Any))
-                    value_ex = Expr(:call, GlobalRef(Core, :getfield), ref, QuoteNode(:x))
+                    # undefcheck = Expr(:throw_undef_if_not, name, isset)
+                    # insert_node!(ir, i, NewInstruction(undefcheck, Any))
+                    value_ex = Expr(:call, GlobalRef(Tapir, :fetch), ref)
                     T = get(slottypes, slot_id(out), Union{})
                     return insert_node!(ir, i, NewInstruction(value_ex, T))
                 end
@@ -1264,10 +1264,10 @@ function lower_tapir_task_output!(ir::IRCode)
             stmt[:inst] = rhs
 
             value = SSAValue(i)
-            ex = Expr(:call, GlobalRef(Core, :setfield!), ref, QuoteNode(:x), value)
-            insert_node!(ir, i, NewInstruction(ex, Any), true)
-            ex = Expr(:call, GlobalRef(Core, :setfield!), ref, QuoteNode(:set), true)
-            insert_node!(ir, i, NewInstruction(ex, Any), true)
+            ex = Expr(:call, GlobalRef(Tapir, :put!), ref, value)
+            insert_node!(ir, i , NewInstruction(ex, Any), true)
+            # ex = Expr(:call, GlobalRef(Core, :setfield!), ref, QuoteNode(:set), true)
+            # insert_node!(ir, i, NewInstruction(ex, Any), true)
         end
     end
 
@@ -1870,8 +1870,8 @@ function outline_child_task(task::ChildTask, ir::IRCode)
             value = SSAValue(ival)
         end
         refvalue = SSAValue(outrefmap[iold])  # ::UndefableRef
-        stmts.inst[ival+1] = Expr(:call, setfield!, refvalue, QuoteNode(:x), value)
-        stmts.inst[ival+2] = Expr(:call, setfield!, refvalue, QuoteNode(:set), true)
+        stmts.inst[ival+1] = Expr(:call, put!, refvalue, value)
+        # stmts.inst[ival+2] = Expr(:call, setfield!, refvalue, QuoteNode(:set), true)
         stmts.type[ival+1] = Any
         stmts.type[ival+2] = Any
         bbendmap[ival] = ival + 2
@@ -2073,13 +2073,13 @@ function lower_tapir_tasks!(ir::IRCode, tasks::Vector{ChildTask}, interp::Abstra
         end
         meth = opaque_closure_method_from_ssair(taskir)
         for (T, iout) in outputs
-            R = Tapir.UndefableRef{T}
+            R = Tapir.TFuture
             ref = insert_node!(ir, tg.id, NewInstruction(Expr(:new, R), R))
-            setset = NewInstruction(
-                Expr(:call, setfield!, ref, QuoteNode(:set), QuoteNode(false)),
-                Any,
-            )
-            insert_node!(ir, tg.id, setset)
+            # setset = NewInstruction(
+            #     Expr(:call, setfield!, ref, QuoteNode(:set), QuoteNode(false)),
+            #     Any,
+            # )
+            # insert_node!(ir, tg.id, setset)
             push!(arguments, ref)
             @assert !haskey(tobeloaded, iout)
             tobeloaded[iout] = (T, ref)
@@ -2153,12 +2153,12 @@ function lower_tapir_tasks!(ir::IRCode, tasks::Vector{ChildTask}, interp::Abstra
         @assert ir.stmts.inst[last(b0.stmts)] === GotoIfNot(false, ibb + 2)
         @assert ir.stmts.inst[last(b1.stmts)] === GotoNode(ibb + 2)  # already set
 
-        isset_ex = Expr(:call, getfield, ref, QuoteNode(:set))
-        isset = insert_node!(ir, last(b0.stmts), NewInstruction(isset_ex, Bool))
-        ir.stmts.inst[last(b0.stmts)] = GotoIfNot(isset, ibb + 2)
+        # isset_ex = Expr(:call, getfield, ref, QuoteNode(:set))
+        # isset = insert_node!(ir, last(b0.stmts), NewInstruction(isset_ex, Bool))
+        # ir.stmts.inst[last(b0.stmts)] = GotoIfNot(isset, ibb + 2)
 
         # If `ref.set`, then `ref.x`:
-        load_ex = Expr(:call, getfield, ref, QuoteNode(:x))
+        load_ex = Expr(:call, Tapir.fetch, ref)
         load = insert_node!(ir, last(b1.stmts), NewInstruction(load_ex, T))
 
         ups = insert_node!(ir, last(b1.stmts), NewInstruction(UpsilonNode(load), T))
