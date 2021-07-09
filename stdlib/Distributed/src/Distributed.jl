@@ -121,4 +121,10 @@ function __init__()
     init_parallel()
 end
 
+Tapir.get_remote_ref() = RemoteChannel()
+
+Tapir.put!(ref::RemoteChannel, x) = put!(ref, x)
+
+Tapir.take!(ref::RemoteChannel) = take!(ref)
+
 end
