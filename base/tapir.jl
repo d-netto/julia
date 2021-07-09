@@ -567,13 +567,10 @@ function __init__()
     sync!(tg)
 end
 
-struct TFuture
-    f
-    TFuture(f) = new{}(f)
-end
+function get_remote_ref end
 
-put!(s::TFuture, v) = Base.put!(s.f, v)
+function put! end
 
-function fetch end
+function take! end
 
 end

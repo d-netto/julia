@@ -1223,9 +1223,8 @@ function lower_tapir_task_output!(ir::IRCode)
     outputrefs = IdDict{Int,SSAValue}()
     for oid in keys(outputinfo)
         T = get(slottypes, oid, Union{})
-        R = Tapir.TFuture
         alloc_pos = 1   # [^alloca-position]
-        ref = insert_node!(ir, alloc_pos, NewInstruction(Expr(:new, R), R))
+        ref = insert_node!(ir, alloc_pos, NewInstruction(Expr(:call, Tapir.get_remote_ref), Any))
         outputrefs[oid] = ref
         # setset = NewInstruction(
         #     Expr(:call, setfield!, ref, QuoteNode(:set), QuoteNode(false)),
@@ -2073,8 +2072,7 @@ function lower_tapir_tasks!(ir::IRCode, tasks::Vector{ChildTask}, interp::Abstra
         end
         meth = opaque_closure_method_from_ssair(taskir)
         for (T, iout) in outputs
-            R = Tapir.TFuture
-            ref = insert_node!(ir, tg.id, NewInstruction(Expr(:new, R), R))
+            ref = insert_node!(ir, tg.id, NewInstruction(Expr(:call, Tapir.get_remote_ref), Any))
             # setset = NewInstruction(
             #     Expr(:call, setfield!, ref, QuoteNode(:set), QuoteNode(false)),
             #     Any,
