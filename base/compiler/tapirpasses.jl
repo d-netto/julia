@@ -1245,7 +1245,7 @@ function lower_tapir_task_output!(ir::IRCode)
                     name, = outputinfo[slot_id(out)]
                     # undefcheck = Expr(:throw_undef_if_not, name, isset)
                     # insert_node!(ir, i, NewInstruction(undefcheck, Any))
-                    value_ex = Expr(:call, GlobalRef(Tapir, :take!), ref)
+                    value_ex = Expr(:call, GlobalRef(Tapir, :take), ref)
                     T = get(slottypes, slot_id(out), Union{})
                     return insert_node!(ir, i, NewInstruction(value_ex, T))
                 end
@@ -2156,7 +2156,7 @@ function lower_tapir_tasks!(ir::IRCode, tasks::Vector{ChildTask}, interp::Abstra
         # ir.stmts.inst[last(b0.stmts)] = GotoIfNot(isset, ibb + 2)
 
         # If `ref.set`, then `ref.x`:
-        load_ex = Expr(:call, Tapir.take!, ref)
+        load_ex = Expr(:call, Tapir.take, ref)
         load = insert_node!(ir, last(b1.stmts), NewInstruction(load_ex, T))
 
         ups = insert_node!(ir, last(b1.stmts), NewInstruction(UpsilonNode(load), T))
