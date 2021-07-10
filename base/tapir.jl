@@ -562,7 +562,7 @@ function get_remote_ref end
 
 function put! end
 
-function take! end
+function take end
 
 # precompile
 const _NEVER = Ref(false)

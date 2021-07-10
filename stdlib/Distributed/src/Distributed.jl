@@ -121,7 +121,7 @@ Tapir.get_remote_ref() = Future()
 
 Tapir.put!(ref::Future, x) = put!(ref::Future, x)
 
-Tapir.take!(ref::Future) = getindex(ref)
+Tapir.take(ref::Future) = getindex(ref)
 
 function __init__()
     init_parallel()
