@@ -496,17 +496,17 @@ macro sync(block)
         $(header...)
         let $var = @syncregion()
             local ans
-            # try
-            ans = $(esc(block))
-            # catch err0
-            #     errs = try
-            #         @sync_end($var)
-            #         nothing
-            #     catch errs
-            #         errs
-            #     end
-            #     rethrow(_merge_errors!(errs, err0))
-            # end
+            try
+                ans = $(esc(block))
+            catch err0
+                errs = try
+                    @sync_end($var)
+                    nothing
+                catch errs
+                    errs
+                end
+                rethrow(_merge_errors!(errs, err0))
+            end
             @sync_end($var)
             ans
         end
@@ -571,6 +571,6 @@ function get_remote_ref end
 
 function put! end
 
-function take! end
+function fetch end
 
 end
