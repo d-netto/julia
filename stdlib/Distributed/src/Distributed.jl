@@ -117,14 +117,14 @@ end
 
 Tapir.spawn!(tasks, f) = spawn!(tasks, f)
 
+Tapir.get_remote_ref() = Future()
+
+Tapir.put!(ref::Future, x) = put!(ref::Future, x)
+
+Tapir.take!(ref::Future) = getindex(ref)
+
 function __init__()
     init_parallel()
 end
-
-Tapir.get_remote_ref() = RemoteChannel()
-
-Tapir.put!(ref::RemoteChannel, x) = put!(ref, x)
-
-Tapir.take!(ref::RemoteChannel) = take!(ref)
 
 end

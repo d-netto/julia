@@ -558,6 +558,12 @@ macro output(exprs::Union{Symbol,Expr}...)
     esc(Expr(:block, __source__, locals, assignments..., outinfo...))
 end
 
+function get_remote_ref end
+
+function put! end
+
+function take! end
+
 # precompile
 const _NEVER = Ref(false)
 function __init__()
@@ -566,11 +572,5 @@ function __init__()
     spawn!(tg, () -> nothing)
     sync!(tg)
 end
-
-function get_remote_ref end
-
-function put! end
-
-function fetch end
 
 end
