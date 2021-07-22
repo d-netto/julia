@@ -1223,9 +1223,9 @@ function lower_tapir_task_output!(ir::IRCode)
     outputrefs = IdDict{Int,SSAValue}()
     for oid in keys(outputinfo)
         T = get(slottypes, oid, Union{})
-        R = Tapir.UndefableRef{T}
+        R = Tapir.MyUndefableRef{T}
         alloc_pos = 1   # [^alloca-position]
-        ref = insert_node!(ir, alloc_pos, NewInstruction(Expr(:new, R), R))
+        ref = insert_node!(ir, alloc_pos, NewInstruction(Expr(:call, R), R))
         outputrefs[oid] = ref
         setset = NewInstruction(
             Expr(:call, setfield!, ref, QuoteNode(:set), QuoteNode(false)),
@@ -1246,7 +1246,7 @@ function lower_tapir_task_output!(ir::IRCode)
                     name, = outputinfo[slot_id(out)]
                     undefcheck = Expr(:throw_undef_if_not, name, isset)
                     insert_node!(ir, i, NewInstruction(undefcheck, Any))
-                    value_ex = Expr(:call, GlobalRef(Core, :getfield), ref, QuoteNode(:x))
+                    value_ex = Expr(:call, GlobalRef(Tapir, :read_from_ref), ref)
                     T = get(slottypes, slot_id(out), Union{})
                     return insert_node!(ir, i, NewInstruction(value_ex, T))
                 end
@@ -1264,7 +1264,7 @@ function lower_tapir_task_output!(ir::IRCode)
             stmt[:inst] = rhs
 
             value = SSAValue(i)
-            ex = Expr(:call, GlobalRef(Core, :setfield!), ref, QuoteNode(:x), value)
+            ex = Expr(:call, GlobalRef(Tapir, :write_to_ref!), ref, value)
             insert_node!(ir, i, NewInstruction(ex, Any), true)
             ex = Expr(:call, GlobalRef(Core, :setfield!), ref, QuoteNode(:set), true)
             insert_node!(ir, i, NewInstruction(ex, Any), true)
@@ -1853,7 +1853,7 @@ function outline_child_task(task::ChildTask, ir::IRCode)
     for (i, iold) in enumerate(outside_uses)
         inew = nargs + ncaps + i
         stmts.inst[inew] = Expr(:call, getfield, Argument(1), inew)
-        stmts.type[inew] = Tapir.UndefableRef{widenconst(ir.stmts[iold][:type])}
+        stmts.type[inew] = Tapir.MyUndefableRef{widenconst(ir.stmts[iold][:type])}
         # ASK: ditto
     end
     # Actual computation executed in the child task:
@@ -1870,7 +1870,7 @@ function outline_child_task(task::ChildTask, ir::IRCode)
             value = SSAValue(ival)
         end
         refvalue = SSAValue(outrefmap[iold])  # ::UndefableRef
-        stmts.inst[ival+1] = Expr(:call, setfield!, refvalue, QuoteNode(:x), value)
+        stmts.inst[ival+1] = Expr(:call, write_to_ref!, refvalue, value)
         stmts.inst[ival+2] = Expr(:call, setfield!, refvalue, QuoteNode(:set), true)
         stmts.type[ival+1] = Any
         stmts.type[ival+2] = Any
@@ -2073,8 +2073,8 @@ function lower_tapir_tasks!(ir::IRCode, tasks::Vector{ChildTask}, interp::Abstra
         end
         meth = opaque_closure_method_from_ssair(taskir)
         for (T, iout) in outputs
-            R = Tapir.UndefableRef{T}
-            ref = insert_node!(ir, tg.id, NewInstruction(Expr(:new, R), R))
+            R = Tapir.MyUndefableRef{T}
+            ref = insert_node!(ir, tg.id, NewInstruction(Expr(:call, R), R))
             setset = NewInstruction(
                 Expr(:call, setfield!, ref, QuoteNode(:set), QuoteNode(false)),
                 Any,
@@ -2158,7 +2158,7 @@ function lower_tapir_tasks!(ir::IRCode, tasks::Vector{ChildTask}, interp::Abstra
         ir.stmts.inst[last(b0.stmts)] = GotoIfNot(isset, ibb + 2)
 
         # If `ref.set`, then `ref.x`:
-        load_ex = Expr(:call, getfield, ref, QuoteNode(:x))
+        load_ex = Expr(:call, read_from_ref, ref)
         load = insert_node!(ir, last(b1.stmts), NewInstruction(load_ex, T))
 
         ups = insert_node!(ir, last(b1.stmts), NewInstruction(UpsilonNode(load), T))

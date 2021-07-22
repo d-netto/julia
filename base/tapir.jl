@@ -14,36 +14,154 @@ module Tapir
 ##### Julia-Tapir Runtime
 #####
 
+abstract type AbstractBag end
+
+mutable struct SBag <: AbstractBag
+    task_id::Int
+    spawned_by::Union{Nothing, SBag}
+    parent::AbstractBag
+
+    SBag(task_id, spawned_by) = (self = new(); self.task_id = task_id; self.spawned_by = spawned_by; self.parent = self)
+end
+
+mutable struct PBag <: AbstractBag
+    parent::AbstractBag
+
+    PBag() = (self = new(); self.parent = self)
+end
+
+mutable struct TaskCounter
+    current_task::Union{Nothing, SBag}
+    used_task_ids::Set{Int}
+
+    TaskCounter() = new(nothing, Set{Int}())
+end
+
+mutable struct BagHolder
+    s_bag::SBag
+    p_bag::PBag
+end
+
+mutable struct ExecutionState
+    task_counter::TaskCounter
+    task_id_to_bags::Dict{Int, BagHolder}
+    debug::Bool
+
+    ExecutionState(debug) = new(TaskCounter(), Dict{Int, BagHolder}(), debug)
+end
+
+global execution_state = ExecutionState(false)
+
+function init_debug()
+    global execution_state = ExecutionState(true)
+    next_available_task_id()
+end
+
+function kill_debug()
+    global execution_state = ExecutionState(false)
+    next_available_task_id()
+end
+
+function next_available_task_id()
+    global execution_state
+    used_task_ids = execution_state.task_counter.used_task_ids
+    id = 1
+    while (id in used_task_ids)
+        id += 1
+    end
+    s_bag = SBag(id, execution_state.task_counter.current_task)
+    p_bag = PBag()
+    execution_state.task_counter.current_task = s_bag
+    push!(used_task_ids, id)
+    push!(execution_state.task_id_to_bags, id => BagHolder(s_bag, p_bag))
+end
+
+function find_bag!(bag)
+    if bag === nothing || bag.parent === bag
+        return bag
+    else
+        bag.parent = find_bag!(bag.parent)
+        return bag.parent
+    end
+end
+
+function union_bag!(bag_1, bag_2)
+    if bag_1 === nothing || bag_2 === nothing
+        return
+    end
+    # TODO: check if this invariant should always hold under the paper conditions
+    @assert bag_1.parent === bag_1 && bag_2.parent === bag_2
+    bag_2.parent = bag_1
+end
+
 const TaskGroup = Channel{Any}
 
 taskgroup() = Channel{Any}(Inf)::TaskGroup
 
 function spawn!(tasks::TaskGroup, @nospecialize(f))
-    t = Task(f)
-    t.sticky = false
-    schedule(t)
-    push!(tasks, t)
+    global execution_state
+    if execution_state.debug
+        next_available_task_id()
+        f()
+        s_bag_spawned_task = execution_state.task_counter.current_task
+        s_bag_caller_task = s_bag_spawned_task.spawned_by
+        p_bag_caller_task = execution_state.task_id_to_bags[s_bag_caller_task.task_id].p_bag
+        union_bag!(p_bag_caller_task, s_bag_spawned_task)
+        execution_state.task_counter.current_task = s_bag_caller_task
+    else
+        t = Task(f)
+        t.sticky = false
+        schedule(t)
+        push!(tasks, t)
+    end
     return nothing
 end
 
 # Can we make it more efficient using the may-happen parallelism property
 # (i.e., the lack of concurrent synchronizations)?
-sync!(tasks::TaskGroup) = Base.sync_end(tasks)
-
-mutable struct UndefableRef{T}
-    set::Bool
-    x::T
-    UndefableRef{T}() where {T} = new{T}(false)
+function sync!(tasks::TaskGroup)
+    global execution_state
+    if execution_state.debug
+        current_task = execution_state.task_counter.current_task
+        # during a sync in a procedure, perform a union between the procedure's SBag and its PBag
+        union_bag!(current_task, execution_state.task_id_to_bags[current_task.task_id].p_bag)
+        # also, empty out the procedure's PBag
+        execution_state.task_id_to_bags[current_task.task_id].p_bag = PBag()
+        execution_state.task_counter.current_task = current_task
+    end
+    Base.sync_end(tasks)
 end
 
-function Base.setindex!(ref::UndefableRef, x)
+mutable struct MyUndefableRef{T}
+    set::Bool
+    x::T
+    reader::Union{Nothing, AbstractBag}
+    writer::Union{Nothing, AbstractBag}
+
+    MyUndefableRef{T}() where {T} = (self = new{T}(); self.set = false; self.reader = nothing; self.writer = nothing; return self)
+end
+
+function write_to_ref!(ref::MyUndefableRef, x)
+    global execution_state
+    if execution_state.debug
+        if find_bag!(ref.reader) isa PBag || find_bag!(ref.writer) isa PBag
+            @warn("Potential race in Tapir variable")
+        end
+        ref.writer = execution_state.task_counter.current_task
+    end
     ref.x = x
     ref.set = true
     return ref
 end
 
-function Base.getindex(ref::UndefableRef)
-    ref.set || not_set_error(ref)
+function read_from_ref(ref::MyUndefableRef)
+    global execution_state
+    if execution_state.debug
+        if find_bag!(ref.writer) isa PBag
+            @warn("Potential race in Tapir variable")
+        end
+        ref.reader = execution_state.task_counter.current_task
+    end
     return ref.x
 end
 
