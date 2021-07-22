@@ -482,6 +482,49 @@ tak(x, y, z) =
         z
     end
 
+""" Tapir tasks are nested; but syncregions do not have to be. """
+module NonNestedSyncregions
+using Base.Experimental: Tapir
+
+@noinline produce(x) = Base.inferencebarrier(x)::typeof(x)
+
+function simple()
+    Tapir.@output a b c
+    tg = Tapir.@syncregion
+    Tapir.@sync begin
+        Tapir.@spawn begin
+            a = produce(111)
+            Tapir.@spawnin tg begin
+                b = produce(a + 222)
+            end
+        end
+        c = produce(333)
+    end
+    d = produce(a + c + 444)  # `b` not available here yet
+    Tapir.@sync_end tg
+    return (a, b, c, d)
+end
+
+function loop()
+    xs = zeros(Int, 4)
+    ys = zeros(Int, 4)
+
+    tg = Tapir.@syncregion
+    Tapir.@sync for i in eachindex(xs)
+        Tapir.@spawn begin
+            xs[i] = 2i
+            Tapir.@spawnin tg begin
+                ys[i] = 3i
+            end
+        end
+    end
+    s = sum(xs)  # `ys` not available here yet
+    Tapir.@sync_end tg
+    return (s, xs, ys)
+end
+
+end # module NonNestedSyncregions
+
 module CapturedToken
 using Base.Experimental: Tapir
 
