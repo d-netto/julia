@@ -165,7 +165,7 @@ function read_from_ref(ref::MyUndefableRef)
     return ref.x
 end
 
-@noinline function not_set_error(::UndefableRef{T}) where {T}
+@noinline function not_set_error(::MyUndefableRef{T}) where {T}
     error("variable of type `$T` is not set")
 end
 
