@@ -711,7 +711,7 @@ module RaceDetectionTests
 using Base.Experimental: Tapir
 using Test
 
-function f_1()
+function simple_race()
     Tapir.@output x
     Tapir.@sync begin
         Tapir.@spawn x = 2
@@ -721,11 +721,11 @@ function f_1()
 end
 
 Tapir.init_debug()
-@test_warn "Potential race in Tapir variable" f_1()
+@test_warn "Potential race in Tapir variable" simple_race()
 
 ### Test 02: should not throw a warning ###
 
-function f_2()
+function diff_vars_no_race()
     Tapir.@output x y
     Tapir.@sync begin
         Tapir.@spawn x = 2
@@ -735,11 +735,11 @@ function f_2()
 end
 
 Tapir.init_debug()
-@test_no_warn f_2()
+@test_nowarn diff_vars_no_race()
 
 ### Test 03: variable z is written by the same "thread" in which it was created --> should not throw a warning ###
 
-function f_3()
+function var_written_same_thread()
     Tapir.@output x y
     local z
     Tapir.@sync begin
@@ -751,11 +751,11 @@ function f_3()
 end
 
 Tapir.init_debug()
-@test_no_warn f_3()
+@test_nowarn var_written_same_thread()
 
 ### Test 04: variable z is written by the different "thread" from the one it was created --> should throw a warning  ###
 
-function f_4()
+function var_written_diff_thread()
     Tapir.@output x y
     local z
     Tapir.@sync begin
@@ -767,11 +767,11 @@ function f_4()
 end
 
 Tapir.init_debug()
-@test_throws TapirRaceError f_4()
+@test_throws Tapir.TapirRaceError var_written_diff_thread()
 
 ### Test 05: should not throw a warning ###
 
-function f_5(bool)
+function mutually_exc_spawn(bool)
     Tapir.@output x
     Tapir.@sync begin
         if bool
@@ -784,11 +784,11 @@ function f_5(bool)
 end
 
 Tapir.init_debug()
-@test_no_warn f_5(true)
+@test_nowarn mutually_exc_spawn(true)
 
 ### Test 06: should not throw a warning ###
 
-function f_6(bool)
+function mutually_exc_spawn_two_vars(bool)
     Tapir.@output x y
     Tapir.@sync begin
         if bool
@@ -803,11 +803,11 @@ function f_6(bool)
 end
 
 Tapir.init_debug()
-@test_no_warn f_6(true)
+@test_nowarn mutually_exc_spawn_two_vars(true)
 
 ### Test 07: race condition in x and y --> should throw a warning ###
 
-function f_7()
+function nested_spawn_race()
     Tapir.@output x y
     Tapir.@sync begin
         Tapir.@spawn begin
@@ -821,11 +821,11 @@ function f_7()
 end
 
 Tapir.init_debug()
-@test_warn "Potential race in Tapir variable" f_7()
+@test_warn "Potential race in Tapir variable" nested_spawn_race()
 
 ### Test 08: should not throw a warning ###
 
-function f_8(bool)
+function mutually_exc_nested_spawn_two_vars(bool)
     Tapir.@output x y
     Tapir.@sync begin
         if bool
@@ -842,11 +842,11 @@ function f_8(bool)
 end
 
 Tapir.init_debug()
-@test_no_warn f_8(true)
+@test_nowarn mutually_exc_nested_spawn_two_vars(true)
 
 ### Test 09: should not throw a warning ###
 
-function f_9(bool)
+function mutually_exc_nested_spawn(bool)
     Tapir.@output x
     Tapir.@sync begin
         Tapir.@spawn begin
@@ -861,7 +861,7 @@ function f_9(bool)
 end
 
 Tapir.init_debug()
-@test_no_warn f_9(true)
+@test_nowarn mutually_exc_nested_spawn(true)
 
 ### Test 09: should throw a warning ###
 
@@ -880,4 +880,6 @@ function f_10()
 end
 
 Tapir.init_debug()
-@test_no_warn f_10()
+@test_nowarn f_10()
+
+end
