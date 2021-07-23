@@ -4,15 +4,13 @@
     Tapir
 
 Optional parallelism API.
-
-This module provides two public API `Tapir.@sync` and `Tapir.@spawn` for
-denoting tasks that _may or may not_ run in parallel.
 """
-module Tapir
 
 #####
 ##### Julia-Tapir Runtime
 #####
+
+module Tapir
 
 abstract type AbstractBag end
 
@@ -94,32 +92,49 @@ function union_bag!(bag_1, bag_2)
     bag_2.parent = bag_1
 end
 
+# TODO: Use unprotected tree to avoid locks in spawn and sync
 const TaskGroup = Channel{Any}
 
-taskgroup() = Channel{Any}(Inf)::TaskGroup
+@noinline taskgroup() = Channel{Any}(Inf)::TaskGroup
 
 function spawn!(tasks::TaskGroup, @nospecialize(f))
-    global execution_state
+    t = Task(f)
+    t.sticky = false
     if execution_state.debug
         next_available_task_id()
-        f()
+        schedule(t)
+        wait(t)
         s_bag_spawned_task = execution_state.task_counter.current_task
         s_bag_caller_task = s_bag_spawned_task.spawned_by
         p_bag_caller_task = execution_state.task_id_to_bags[s_bag_caller_task.task_id].p_bag
         union_bag!(p_bag_caller_task, s_bag_spawned_task)
         execution_state.task_counter.current_task = s_bag_caller_task
     else
-        t = Task(f)
-        t.sticky = false
         schedule(t)
         push!(tasks, t)
     end
     return nothing
 end
 
-# Can we make it more efficient using the may-happen parallelism property
-# (i.e., the lack of concurrent synchronizations)?
-function sync!(tasks::TaskGroup)
+function spawn(::Type{TaskGroup}, @nospecialize(f))
+    t = Task(f)
+    t.sticky = false
+    if execution_state.debug
+        next_available_task_id()
+        schedule(t)
+        wait(t)
+        s_bag_spawned_task = execution_state.task_counter.current_task
+        s_bag_caller_task = s_bag_spawned_task.spawned_by
+        p_bag_caller_task = execution_state.task_id_to_bags[s_bag_caller_task.task_id].p_bag
+        union_bag!(p_bag_caller_task, s_bag_spawned_task)
+        execution_state.task_counter.current_task = s_bag_caller_task
+    else
+        schedule(t)
+    end
+    return t
+end
+
+function handle_sync()
     global execution_state
     if execution_state.debug
         current_task = execution_state.task_counter.current_task
@@ -129,32 +144,59 @@ function sync!(tasks::TaskGroup)
         execution_state.task_id_to_bags[current_task.task_id].p_bag = PBag()
         execution_state.task_counter.current_task = current_task
     end
+end
+
+function sync!(tasks::TaskGroup)
+    handle_sync()
     Base.sync_end(tasks)
+    close(tasks)
 end
 
-mutable struct MyUndefableRef{T}
-    set::Bool
-    x::T
-    reader::Union{Nothing, AbstractBag}
-    writer::Union{Nothing, AbstractBag}
+# Using `Some{Union{...}}` for "concretely typed Union". This avoids dynamic
+# dispatch (hopefully) without code bloat.
+const ConcreteMaybe{T} = Some{Union{T,Nothing}}
+const MaybeTask = ConcreteMaybe{Task}
 
-    MyUndefableRef{T}() where {T} = (self = new{T}(); self.set = false; self.reader = nothing; self.writer = nothing; return self)
-end
-
-function write_to_ref!(ref::MyUndefableRef, x)
-    global execution_state
-    if execution_state.debug
-        if find_bag!(ref.reader) isa PBag || find_bag!(ref.writer) isa PBag
-            @warn("Potential race in Tapir variable")
+function synctasks(tasks::MaybeTask...)
+    handle_sync()
+    c_ex = nothing
+    for s in tasks
+        t = something(s)
+        if t isa Task
+            try
+                wait(t)
+            catch err
+                if c_ex === nothing
+                    c_ex = CompositeException()
+                end
+                push!(c_ex, err)
+            end
         end
-        ref.writer = execution_state.task_counter.current_task
     end
-    ref.x = x
-    ref.set = true
-    return ref
+    if c_ex !== nothing
+        throw(c_ex)
+    end
 end
 
-function read_from_ref(ref::MyUndefableRef)
+function synctasks(args::ConcreteMaybe{Any}...)
+    handle_sync()
+    args = Iterators.map(something, args)
+    args = Iterators.filter(!isnothing, args)
+    tasks = Iterators.map(t -> ConcreteMaybe{typeof(t)}(t), args)
+    synctasks(tasks...)
+end
+
+# Like RefValue, but using a special type for reflections in spawn! etc. that
+# can be useful for custom workgroups (e.g., Distributed-based)
+mutable struct MyOutputRef{T}
+    x::T
+    reader::Union{Nothing, SBag}
+    writer::Union{Nothing, SBag}
+    MyOutputRef{T}() where T = (self = new{T}(); self.reader = nothing; self.writer = nothing; return self)
+    MyOutputRef{T}(x) where T = (self = new{T}(); self.x = x; self.reader = nothing; self.writer = nothing; return self)
+end
+
+function read_from_ref(ref::MyOutputRef)
     global execution_state
     if execution_state.debug
         if find_bag!(ref.writer) isa PBag
@@ -165,8 +207,16 @@ function read_from_ref(ref::MyUndefableRef)
     return ref.x
 end
 
-@noinline function not_set_error(::MyUndefableRef{T}) where {T}
-    error("variable of type `$T` is not set")
+function write_to_ref!(ref::MyOutputRef, x)
+    global execution_state
+    if execution_state.debug
+        if find_bag!(ref.reader) isa PBag || find_bag!(ref.writer) isa PBag
+            @warn("Potential race in Tapir variable")
+        end
+        ref.writer = execution_state.task_counter.current_task
+    end
+    ref.x = x
+    return ref
 end
 
 abstract type TapirRaceError <: Exception end
@@ -179,6 +229,8 @@ struct RacyLoadError <: TapirRaceError
     value::Any
 end
 
+# Note: Using special error types (rather than formatting message in `racy_*`
+# functions) so that users can catch it and investigate the value in the REPL.
 @noinline racy_store(@nospecialize(v)) = throw(RacyStoreError(v))
 @noinline racy_load(@nospecialize(v)) = throw(RacyLoadError(v))
 
@@ -226,11 +278,15 @@ end
     end
 
     @warn(
-        raw"""
+        """
         Tapir: Detected racy updates of variable(s). Use the output variable syntax
-            $output = value
-        to explicitly denote the output variables or use
+
+            Tapir.@output variable
+
+        to explicitly mark the `variable` as an task output or use
+
             local variable
+
         inside `Tapir.@spawn` to declare that `variable` is used only locally in a task.
 
         See more information in `Tapir.@spawn` documentation.
@@ -243,58 +299,68 @@ end
     )
 end
 
-@noinline function escaping_task_output_error(name = nothing)::Union{}
-    @nospecialize
-    msg = "Tapir: escaping task output variable"
-    if name !== nothing
-        msg = "$msg: $name"
-    end
-    throw(ConcurrencyViolationError(msg))
-end
+@noinline detach_after_sync_error()::Union{} = error("Tapir: detach invoked after sync")
 
 #####
 ##### Julia-Tapir Frontend
 #####
 
+macro syncregion(tg = nothing)
+    if tg === nothing
+        tg = :(taskgroup())
+    else
+        tg = esc(tg)
+    end
+    Expr(
+        :block,
+        __source__,
+        :(tg = $tg),
+        # `Expr(:syncregion, tg)` evaluates to `tg` which acts as a token:
+        Expr(:syncregion, :tg),
+    )
+end
+
 """
-    Tapir._load(x, name::Symbol) -> x
+    shadow_vars(ex::Expr) -> ex′::Expr
 
-[INTERNAL] A placeholder for denoting where the task output variables named
-`name` should be loaded.
+If the syntax `\$x` is used in lhs/lvalue _or_ rhs/rvalue, replace it with a
+local variable `x_shadow` that acts as a local copy of `\$x`. If `\$x` appears
+in the lhs, also insert the "store" `\$x = x_shadow` (so that it will be handled
+by `Tapir.@sync`).  If `\$x` appears in `ex`, the variable `x` is declared to be
+local in `ex` to avoid introducing the phi nodes in the continuation
+[^no_racy_phi].
 
-The task output syntax
+That is to say, it transforms
 
-    Tapir.@sync begin
+    @spawn begin
         ...
-        Tapir.@spawn \$output = rhs
-        ...
+        \$x = f(\$x)
     end
 
-is lowered to an AST equivalent to
+to
 
-    local slot
-    Tapir.@sync begin
-        ...
-        Tapir.@spawn slot = rhs
-        ...
+    let x_shadow
+        if @isdefined x
+            x_shadow = x
+        end
+        @raw_spawn begin
+            local x  # required for avoiding "racy phi" [^no_racy_phi]
+            # if @isdefined x_shadow
+            #     x = x_shadow   # TODO: should we?
+            # end
+            ...
+            x_shadow = f(x_shadow)
+            \$x = x_shadow
+        end
     end
-    output = Tapir._load(slot, :output)
 
-The function `_load` returns the first argument as-is. This lets the inference
-to support task output without any change (given that the source program does
-not have a race).
+[^no_racy_phi]: We need to make `x` a local variable when we have `\$x` because
+    `x` may appear after the `end` of `@sync`. Since we "load" `\$x` only when
+    it is defined (to support conditional task outputs; see `@sync` definition),
+    a phi node has to be inserted after reattach for the variable live through
+    the `else` branch of `@isdefined \$x`.
 
-The function `_load` treated specially during slot2reg; i.e., the slots
-specified as the first argument are _not_ promoted to SSA registers (ref
-`task_output_slots`).  These leftover slots are transformed to PhiC and Upsilon
-nodes inside the `lower_tapir_phic_output!` pass run just after slot2reg.  The PhiC
-and Upsilon nodes that cross task boundaries are finally lowered to
-`Tapir.UndefableRef` in `lower_tapir_task!`.  (Note: PhiC and Upsilon nodes
-translate to stack memory in LLVM.  So, this representation may also be useful
-for Tapir/LLVM integration.)
-
-* TODO: Add an IR node that directly represents `_load`? It would reduce the
-  transformation inside the macro.
+# Discussion
 
 A possible extension is to forbid
 
@@ -321,52 +387,6 @@ _by default_ so that we can detect this possibly-racy pattern. It should be
 possible to opt-in the above pattern by a special syntax such as
 `\$(a::@norace) = rhs`; i.e., the user declares that at most one task executes
 this line of code.
-"""
-_load(x, ::Symbol) = x
-
-macro syncregion()
-    Expr(:syncregion)
-end
-
-"""
-    shadow_vars(ex::Expr) -> ex′::Expr
-
-If the syntax `\$x` is used in lhs/lvalue _or_ rhs/rvalue, replace it with a
-local variable `x_shadow` that acts as a local copy of `\$x`. If `\$x` appears
-as in lhs, also insert the "store" `\$x = x_shadow` (so that it can be
-translated into set-many-load-once PhiC/Upsilon nodes).  If `\$x` appears in
-`ex`, the variable `x` is declared to be local in `ex` to avoid introducing the
-phi nodes in the continuation [^no_racy_phi].
-
-That is to say, it transforms
-
-    @spawn begin
-        ...
-        \$a = f(\$x)
-    end
-
-to
-
-    let x_shadow
-        if @isdefined x
-            x_shadow = x
-        end
-        @raw_spawn begin
-            local x  # required for avoiding "racy phi" [^no_racy_phi]
-            # if @isdefined x_shadow
-            #     x = x_shadow   # TODO: should we?
-            # end
-            ...
-            x_shadow = f(x_shadow)
-            \$x = x_shadow
-        end
-    end
-
-[^no_racy_phi]: We need to make `x` a local variable when we have `\$x` because
-    `x` may appear after the `end` of `@sync`. Since we "load" `\$x` only when
-    it is defined (to support conditional task outputs; see `@sync` definition),
-    a phi node has to be inserted after reattach for the variable live through
-    the `else` branch of `@isdefined \$x`.
 """
 function shadow_vars(ex::Expr)
     mapping = Dict{Symbol,Symbol}()  # x => x_shadow
@@ -544,6 +564,26 @@ tasks are synchronized upon exiting this block.
 
 # Extended help
 
+!!! note
+    For experimentation, two candidate syntaxes are implemented to handle task
+    outputs.
+
+## Task output syntax `Tapir.@output`
+
+`Tapir.@output` can be placed before `Tapir.@sync` to declare the task output
+variables.
+
+```julia
+Tapir.@output x y
+Tapir.@sync begin
+    Tapir.@spawn x = f()
+    y = g()
+end
+use(x, y)
+```
+
+See `Tapir.@output` documentation for more information.
+
 ## Task output syntax `\$output`
 
 Inside `Tapir.@sync` and `Tapir.@spawn`, the syntax `\$output` can be used for
@@ -600,25 +640,36 @@ end
 ```
 """
 macro sync(block)
+    block = ensure_linenumbernode(__source__, block)
+    esc(:($Tapir.@sync $Tapir.taskgroup() $block))
+end
+
+macro sync(taskgroup, block)
     var = esc(tokenname)
     block = macroexpand(__module__, block)  # for nested @sync
     block = Expr(:block, __source__, block)
     dict, block = output_vars(block)
     outputs = sort!(collect(dict))
-    header = [:(local $(esc(slot))) for (_, slot) in outputs]
+    header = if isempty(outputs)
+        nothing
+    else
+        esc(Expr(:macrocall, Tapir.var"@output", __source__, map(last, outputs)...))
+    end
     footer = map(outputs) do (v, slot)
         quote
             if $(Expr(:isdefined, esc(slot)))
-                $(esc(v)) = _load($(esc(slot)), $((QuoteNode(v))))
+                $(esc(v)) = $(esc(slot))
             else
-                # We don't see `v` set in spawn since `v` would be declared to
-                # be local by the `@spawn` macro [^no_racy_phi].
+                # It is safe to ignore this branch since the variable `v` set in
+                # spawn is not observable when `$v` is used. This is because the
+                # variable `v` would be declared to be local by the `@spawn`
+                # macro [^no_racy_phi].
             end
         end
     end
     quote
-        $(header...)
-        let $var = @syncregion()
+        $header
+        let $var = @syncregion($(esc(taskgroup)))
             local ans
             try
                 ans = $(esc(block))
@@ -650,6 +701,15 @@ end
 
 """
     Tapir.@spawn expression
+
+Mark that `expression` can be run in parallel with the surrounding code.
+
+Note that parallelism is optional. The function using `Tapir.@spawn` must work
+correctly after elidiging `Tapir.@spawn` (i.e., executing `expression`
+serially). For example, tasks spawned by `Tapir.@spawn`  cannot communicate each
+other using `Channel`.
+
+See also: `Tapir.@sync`, `Tapir.@output`
 """
 macro spawn(expr)
     expr = ensure_linenumbernode(__source__, expr)
@@ -663,6 +723,15 @@ Mark variables named `v₍`, `v₂`, ..., and `vₙ` as task outputs. This is
 equivalent to `local v₍, v₂, …, vₙ` in terms of the scoping rule. However, they
 must not be written or read in the code regions that may potentially be run in
 parallel.
+
+Task output variables can also be initialized using `=` as in
+`Tapir.@output a = 1 b = 2`. It can also be used for pre-defined variables:
+
+```julia
+a = f()
+Tapir.@output a
+Tapir.@sync begin ... end
+````
 """
 macro output(exprs::Union{Symbol,Expr}...)
     variables = Symbol[]
@@ -673,6 +742,8 @@ macro output(exprs::Union{Symbol,Expr}...)
         elseif Meta.isexpr(ex, :(=), 2) && ex.args[1] isa Symbol
             push!(variables, ex.args[1])
             push!(assignments, ex)
+        else
+            error("unsupported: $ex")
         end
     end
 
@@ -682,6 +753,83 @@ macro output(exprs::Union{Symbol,Expr}...)
     esc(Expr(:block, __source__, locals, assignments..., outinfo...))
 end
 
+#####
+##### Utils
+#####
+
+"""
+    Tapir.dontoptimize()
+
+Ask the compiler to not optimize out the current task.  Note that it must be
+called both inside and outside `Tapir.@spawn` as a spawn can be eliminated when
+the continuation is trivial even when the work inside `Tapir.@spawn` is
+non-trivial.
+"""
+@inline dontoptimize() = Base.llvmcall("ret void", Cvoid, Tuple{})
+# Currently the optimizer gives up when it sees a llvmcall
+
+function print_remarks()
+    remarks = Core.Compiler.tapir_get_remarks!()
+    print_remarks(stdout, remarks)
+end
+
+function print_remarks(io::IO, remarks)
+    # for print_stmt:
+    used = BitSet()
+    color = get(io, :color, false)::Bool
+
+    linfo::Union{Nothing, Core.MethodInstance} = nothing
+    for msg in remarks
+
+        if msg isa Core.MethodInstance
+            linfo = msg
+            continue
+        elseif linfo !== nothing
+            println(io)
+            printstyled(io, "[Tapir] Remarks on: ", ; color = :blue)
+            println(io, linfo.def)
+            linfo = nothing
+        end
+
+        for x in msg::Tuple
+            if x isa Core.Compiler.TapirRemarkInstruction
+                push!(used, x.idx)
+                maxlength_idx = length(string(x.idx))
+                Base.IRShow.print_stmt(io, x.idx, x.inst, used, maxlength_idx, color, true)
+                empty!(used)
+            else
+                print(io, x)
+            end
+        end
+        println(io)
+    end
+end
+
+"""
+    Tapir.with_remarks(f)
+
+Print remarks for the functions optimized while executing `f`.
+
+# Examples
+```julia
+Tapir.with_remarks() do
+    @code_typed f()
+end
+```
+
+Note: block indices for the IR returned from `@code_typed` may not match
+with the numbers printed by remarks.
+"""
+function with_remarks(@nospecialize(f))
+    old = Core.Compiler.set_tapir_remark(true)
+    try
+        return f()
+    finally
+        print_remarks()
+        Core.Compiler.set_tapir_remark(old)
+    end
+end
+
 # precompile
 const _NEVER = Ref(false)
 function __init__()
@@ -689,6 +837,10 @@ function __init__()
     tg = taskgroup()
     spawn!(tg, () -> nothing)
     sync!(tg)
+    t = MaybeTask(spawn(typeof(tg), () -> nothing))
+    synctasks(t)
+    synctasks(t, t)
+    synctasks(t, t, t)
 end
 
 end

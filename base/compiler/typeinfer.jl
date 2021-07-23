@@ -665,8 +665,15 @@ function type_annotate!(sv::InferenceState, run_optimizer::Bool)
         else
             if isa(expr, Expr) && is_meta_expr_head(expr.head)
                 # keep any lexically scoped expressions
-            elseif isa(expr, DetachNode) || isa(expr, ReattachNode) || isa(expr, SyncNode)
+            elseif (
+                isa(expr, DetachNode) ||
+                isa(expr, ReattachNode) ||
+                isa(expr, SyncNode) ||
+                isexpr(expr, :syncregion)
+            )
                 # keep parallel IR constructs
+                # If the continuation is deleted, `renumber_ir_elements!` will
+                # remove detach and reattach in tandem.
             elseif run_optimizer
                 deleteat!(body, i)
                 deleteat!(states, i)
@@ -674,9 +681,7 @@ function type_annotate!(sv::InferenceState, run_optimizer::Bool)
                 deleteat!(src.codelocs, i)
                 deleteat!(sv.stmt_info, i)
                 nexpr -= 1
-                if oldidx < length(changemap)
-                    changemap[oldidx + 1] = -1
-                end
+                changemap[oldidx] = -1
                 continue
             else
                 body[i] = Const(expr) # annotate that this statement actually is dead

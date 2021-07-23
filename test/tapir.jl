@@ -2,6 +2,7 @@
 
 module TestTapir
 include("tapir_examples.jl")
+include("tapir_tools.jl")
 
 using InteractiveUtils
 using Test
@@ -85,7 +86,7 @@ end
     @test let_in_spawn() == (1, 2)
 end
 
-@testset "`Tapir.Output`" begin
+@testset "Task outputs" begin
     @test @inferred(TaskOutputs.simple()) == 2
     @test TaskOutputs.simple_closure_set_by_one(true) == 111
     @test TaskOutputs.simple_closure_set_by_one(false) == 222
@@ -98,13 +99,21 @@ end
     @test @inferred(TaskOutputs.update_distinct(false)) == 6
     @test @inferred(TaskOutputs.local_update_after_store(3)) == sum(1:3)
     @test @inferred(TaskOutputs.conditional_output(true)) == 2
+    @test @inferred(TaskOutputs.independent_increments()) == 333
+    @test @inferred(TaskOutputs.aggregate()) == 9
     @test @inferred(tmap(x -> x + 0.5, 1:10)) == 1.5:1:10.5
 
     @test_throws UndefVarError(:a) TaskOutputs.conditional_output(false)
+end
 
-    @testset "`simple_escaping_task_output`" begin
-        err = @test_error TaskOutputs.simple_escaping_task_output()
-        @test occursin("escaping task output variable", sprint(showerror, err))
+@testset "Aggregate task output" begin
+    @testset for (x, y) in [
+        (1, 2),
+        ((1, (2, (3, 4))), (x = (y = (z = (5, 6, 7),),), w = 8)),
+        ((1, 2, 3), (4, 5, 6)),
+        ((((1, 2), 3, (4, 5)), 6), (7, (8, (9,), 10), 11)),
+    ]
+        @test @inferred(TaskOutputs.identity2(x, y)) === (x, y)
     end
 end
 
@@ -171,14 +180,34 @@ end
     @test unreachable_spawn() === nothing
 end
 
+@testset "CapturedToken" begin
+    @test CapturedToken.iife() == 333
+    @test CapturedToken.iife_optimizable() == 333
+
+    @testset "invoke_escaped_spawn" begin
+        err = @test_error CapturedToken.invoke_escaped_spawn()
+        @test occursin("detach invoked after sync", sprint(showerror, err))
+    end
+
+    @testset "escaped_spawn" begin
+        closure = CapturedToken.escaped_spawn()
+        err = @test_error closure()
+        @test occursin("Channel is closed", sprint(showerror, err))
+        # TODO: better error?
+    end
+end
+
 @testset "OptimizableTasks" begin
     @testset "$label" for (label, ci) in [
         :trivial_detach => first(@code_typed OptimizableTasks.trivial_detach(0, 0)),
         :trivial_continuation =>
             first(@code_typed OptimizableTasks.trivial_continuation(0, 0)),
+        :trivial_spawn_in_continuation =>
+            first(@code_typed OptimizableTasks.trivial_spawn_in_continuation()),
         :always_throw => first(@code_typed OptimizableTasks.always_throw()),
         :set_distinct =>
             first(@code_typed TaskOutputs.set_distinct_optimizable(true)),
+        :iife_optimizable => first(@code_typed CapturedToken.iife_optimizable()),
     ]
         @test !Core.Compiler.has_tapir(ci::Core.Compiler.CodeInfo)
     end
@@ -190,8 +219,44 @@ end
         :loop_in_continuation =>
             first(@code_typed NonOptimizableTasks.loop_in_continuation(1)),
         :spawn_in_loop => first(@code_typed NonOptimizableTasks.spawn_in_loop()),
+        :dontoptimize_dontoptimize =>
+            first(@code_typed NonOptimizableTasks.dontoptimize_dontoptimize()),
     ]
         @test Core.Compiler.has_tapir(ci::Core.Compiler.CodeInfo)
+    end
+end
+
+@testset "TaskGroupOptimizations" begin
+    @testset "$label" for (label, ir, isoptimizable) in [
+        (:two_root_spawns, (@ircode_tapir TaskGroupOptimizations.two_root_spawns()), true),
+        (:nested_syncs, (@ircode_tapir TaskGroupOptimizations.nested_syncs()), true),
+        (:nested_spawns, (@ircode_tapir NestedSpawns.f()), false),
+    ]
+        spawn!_exprs = []
+        spawn_exprs = []
+        for i in 1:length(ir.stmts)
+            ex = ir.stmts.inst[i]
+            if Meta.isexpr(ex, :invoke)
+                f = ex.args[2]
+            elseif Meta.isexpr(ex, :call)
+                f = ex.args[1]
+            else
+                continue
+            end
+            f, _ = Core.Compiler.resolve_special_value(f)
+            if f === Tapir.spawn!
+                push!(spawn!_exprs, i => ex)
+            elseif f === Tapir.spawn
+                push!(spawn_exprs, i => ex)
+            end
+        end
+        if isoptimizable
+            @test spawn!_exprs == []
+            @test !isempty(spawn_exprs)
+        else
+            @test !isempty(spawn!_exprs)
+            @test spawn_exprs == []
+        end
     end
 end
 

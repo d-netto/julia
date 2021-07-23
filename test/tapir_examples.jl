@@ -134,19 +134,6 @@ P = 1
 
 """ A simple example with less macro tricks. """
 function simple()
-    local ao, bo
-    token = Tapir.@syncregion
-    Tapir.@spawnin token begin
-        ao = produce()
-    end
-    bo = produce()
-    Tapir.@sync_end token
-    a = Tapir._load(ao, :a)
-    b = Tapir._load(bo, :b)
-    a + b
-end
-
-function simple_task_output()
     Tapir.@output a b
     token = Tapir.@syncregion
     Tapir.@spawnin token begin
@@ -160,7 +147,7 @@ end
 call(f) = f()
 
 function simple_closure_set_by_one(flag)
-    local slot
+    Tapir.@output slot
     token = Tapir.@syncregion
     Tapir.@spawnin token begin
         call() do
@@ -175,24 +162,12 @@ function simple_closure_set_by_one(flag)
         end
     end
     Tapir.@sync_end token
-    out = Tapir._load(slot, :out)
-    return out
-end
-
-function simple_escaping_task_output()
-    local slot
-    token = Tapir.@syncregion
-    Tapir.@spawnin token begin
-        slot = produce(111)
-    end
-    Tapir.@sync_end token
-    identity(slot)  # escaping
-    out = Tapir._load(slot, :out)
+    out = slot
     return out
 end
 
 function simple_conditional_task_output(x::Bool)
-    local slot
+    Tapir.@output slot
     token = Tapir.@syncregion
     Tapir.@spawnin token if x
         slot = produce(111)
@@ -200,7 +175,7 @@ function simple_conditional_task_output(x::Bool)
     b = produce(222)
     Tapir.@sync_end token
     if @isdefined(slot)
-        a = Tapir._load(slot, :a)
+        a = slot
     end
     return b + (x ? a : 0)
 end
@@ -294,6 +269,35 @@ function conditional_output(x)
         $b = produce()
     end
     return a + b
+end
+
+function independent_increments()
+    a = 0
+    b = 0
+    Tapir.@output a b
+    Tapir.@sync begin
+        Tapir.@spawn a += produce(111)
+        b += produce(222)
+    end
+    return a + b
+end
+
+function aggregate()
+    Tapir.@output a b
+    Tapir.@sync begin
+        Tapir.@spawn a = produce((1, (2, (3, 4))))
+        b = produce((x = (y = (z = (5, 6, 7),),), w = 8))
+    end
+    return a[2][2][2] + b.x.y.z[1]
+end
+
+function identity2(x, y)
+    Tapir.@output a b
+    Tapir.@sync begin
+        Tapir.@spawn a = produce(x)
+        b = produce(y)
+    end
+    return (a, b)
 end
 
 end # module TaskOutputs
@@ -478,6 +482,115 @@ tak(x, y, z) =
         z
     end
 
+""" Tapir tasks are nested; but syncregions do not have to be. """
+module NonNestedSyncregions
+using Base.Experimental: Tapir
+
+@noinline produce(x) = Base.inferencebarrier(x)::typeof(x)
+
+function simple()
+    Tapir.@output a b c
+    tg = Tapir.@syncregion
+    Tapir.@sync begin
+        Tapir.@spawn begin
+            a = produce(111)
+            Tapir.@spawnin tg begin
+                b = produce(a + 222)
+            end
+        end
+        c = produce(333)
+    end
+    d = produce(a + c + 444)  # `b` not available here yet
+    Tapir.@sync_end tg
+    return (a, b, c, d)
+end
+
+function loop()
+    xs = zeros(Int, 4)
+    ys = zeros(Int, 4)
+
+    tg = Tapir.@syncregion
+    Tapir.@sync for i in eachindex(xs)
+        Tapir.@spawn begin
+            xs[i] = 2i
+            Tapir.@spawnin tg begin
+                ys[i] = 3i
+            end
+        end
+    end
+    s = sum(xs)  # `ys` not available here yet
+    Tapir.@sync_end tg
+    return (s, xs, ys)
+end
+
+end # module NonNestedSyncregions
+
+module CapturedToken
+using Base.Experimental: Tapir
+
+@noinline produce(x) = Base.inferencebarrier(x)::typeof(x)
+
+""" Immediately-invoked Function Expression (IIFE) is OK. """
+function iife()
+    Tapir.@output a b
+    Tapir.@sync begin
+        function closure()
+            Tapir.@spawn a = produce(111)
+        end
+        closure()
+        b = produce(222)
+    end
+    return a + b
+end
+
+""" Some trivial IIFE can be optimized out. """
+function iife_optimizable()
+    Tapir.@output a b
+    Tapir.@sync begin
+        function closure()
+            Tapir.@spawn a = 111
+        end
+        closure()
+        b = produce(222)
+    end
+    return a + b
+end
+
+"""
+    escaped_spawn() -> closure
+
+Return an "invalid" `closure` that throws as it captures the syncregion token.
+"""
+function escaped_spawn()
+    local closure
+    Tapir.@sync begin
+        closure = function ()
+            Tapir.@spawn produce(111)
+        end
+        produce(222)
+    end
+    return closure
+end
+
+"""
+    invoke_escaped_spawn()::Union{}
+
+Invoke a closure that captures syncregion after sync, which should be disallowed.
+"""
+function invoke_escaped_spawn()
+    local closure
+    Tapir.@sync begin
+        closure = function ()
+            Tapir.@spawn produce(111)
+        end
+        produce(222)
+    end
+    closure()
+    return
+end
+
+end # module CapturedToken
+
 module OptimizableTasks
 using Base.Experimental: Tapir
 
@@ -498,6 +611,14 @@ function trivial_continuation(x, y)
         $b = x + y
     end
     return a + b
+end
+
+function trivial_spawn_in_continuation()
+    Tapir.@sync begin
+        Tapir.@spawn produce()
+        Tapir.@spawn :trivial
+        :trivial
+    end
 end
 
 function always_throw()
@@ -549,4 +670,39 @@ function spawn_in_loop()
     end
 end
 
+function dontoptimize_dontoptimize()
+    Tapir.@sync begin
+        Tapir.@spawn Tapir.dontoptimize()
+        Tapir.dontoptimize()
+    end
+    return
+end
+
 end # module NonOptimizableTasks
+
+module TaskGroupOptimizations
+using Base.Experimental: Tapir
+
+@noinline produce(x) = Base.inferencebarrier(x)::typeof(x)
+
+function two_root_spawns()
+    Tapir.@sync begin
+        Tapir.@spawn produce(111)
+        Tapir.@spawn produce(222)
+        produce(333)
+    end
+end
+
+function nested_syncs()
+    Tapir.@sync begin
+        Tapir.@spawn produce(111)
+        Tapir.@spawn produce(222)
+        Tapir.@sync begin
+            Tapir.@spawn produce(333)
+            produce(444)
+        end
+        produce(4555)
+    end
+end
+
+end # module TaskGroupOptimizations

@@ -307,12 +307,16 @@ function run_passes(ci::CodeInfo, nargs::Int, sv::OptimizationState)
     # TODO: Domsorting can produce an updated domtree - no need to recompute here
     tapir = has_tapir(ir)
     if tapir
+        tapir_remark_begin(sv)
         # This must be run just after `slot2ref`:
         @timeit "Early tapir pass" ir, racy = early_tapir_pass!(ir)
         if racy
             # type_lift_pass! is required as a fixup of slot2reg
             @timeit "post-racy: type lift" ir = type_lift_pass!(ir)
             @timeit "post-racy: compact" ir = compact!(ir)
+            if JLOptions().debug_level == 2
+                @timeit "post-racy: verify" (verify_ir(ir); verify_linetable(ir.linetable))
+            end
             return ir
         end
     end
@@ -325,10 +329,11 @@ function run_passes(ci::CodeInfo, nargs::Int, sv::OptimizationState)
     #@Base.show ir.new_nodes
     #@Base.show ("after_sroa", ir)
     ir = adce_pass!(ir)
+    @timeit "Tapir DSE" ir = tapir_dead_store_elimination_pass!(ir)
     #@Base.show ("after_adce", ir)
     @timeit "type lift" ir = type_lift_pass!(ir)
     @timeit "compact 3" ir = compact!(ir)
-    tapir && @timeit "Remove tirival spawns" ir = remove_trivial_spawns!(ir)
+    @timeit "Late tapir pass" ir = late_tapir_pass!(ir)
     #@Base.show ir
     if JLOptions().debug_level == 2
         @timeit "verify 3" (verify_ir(ir); verify_linetable(ir.linetable))
@@ -619,14 +624,23 @@ function renumber_ir_elements!(body::Vector{Any}, changemap::Vector{Int})
     return renumber_ir_elements!(body, changemap, changemap)
 end
 
-function renumber_ir_elements!(body::Vector{Any}, ssachangemap::Vector{Int}, labelchangemap::Vector{Int})
-    for i = 2:length(labelchangemap)
-        labelchangemap[i] += labelchangemap[i - 1]
-    end
-    if ssachangemap !== labelchangemap
-        for i = 2:length(ssachangemap)
-            ssachangemap[i] += ssachangemap[i - 1]
+function cumsum_ssamap!(ssamap::Vector{Int})
+    rel_change = 0
+    for i = 1:length(ssamap)
+        rel_change += ssamap[i]
+        if ssamap[i] == -1
+            # Keep a marker that this statement was deleted
+            ssamap[i] = typemin(Int)
+        else
+            ssamap[i] = rel_change
         end
+    end
+end
+
+function renumber_ir_elements!(body::Vector{Any}, ssachangemap::Vector{Int}, labelchangemap::Vector{Int})
+    cumsum_ssamap!(labelchangemap)
+    if ssachangemap !== labelchangemap
+        cumsum_ssamap!(ssachangemap)
     end
     if labelchangemap[end] == 0 && ssachangemap[end] == 0
         return
@@ -646,19 +660,32 @@ function renumber_ir_elements!(body::Vector{Any}, ssachangemap::Vector{Int}, lab
                 body[i] = ReturnNode(SSAValue(el.val.id + ssachangemap[el.val.id]))
             end
         elseif isa(el, DetachNode)
-            syncregion = el.syncregion
-            if isa(syncregion, SSAValue)
+            if labelchangemap[el.label] == typemin(Int)
+                body[i] = nothing
+            else
+                label = el.label + labelchangemap[el.label]
+                syncregion = el.syncregion
+                if isa(syncregion, SSAValue)
                     syncregion = SSAValue(syncregion.id + ssachangemap[syncregion.id])
+                    body[i] = DetachNode(syncregion, label)
+                else
+                    body[i] = DetachNode(syncregion, label)
+                end
             end
-            label = el.label + labelchangemap[el.label]
-            body[i] = DetachNode(syncregion, label)
         elseif isa(el, ReattachNode)
-            syncregion = el.syncregion
-            if isa(syncregion, SSAValue)
+            if labelchangemap[el.label] == typemin(Int)
+                body[i] = nothing
+                # TODO: Make this always valid by using fallthrough in ReattachNode
+            else
+                label = el.label + labelchangemap[el.label]
+                syncregion = el.syncregion
+                if isa(syncregion, SSAValue)
                     syncregion = SSAValue(syncregion.id + ssachangemap[syncregion.id])
+                    body[i] = ReattachNode(syncregion, label)
+                else
+                    body[i] = ReattachNode(syncregion, label)
+                end
             end
-            label = el.label + labelchangemap[el.label]
-            body[i] = ReattachNode(syncregion, label)
         elseif isa(el, SyncNode)
             syncregion = el.syncregion
             if isa(syncregion, SSAValue)
@@ -667,6 +694,24 @@ function renumber_ir_elements!(body::Vector{Any}, ssachangemap::Vector{Int}, lab
             body[i] = SyncNode(syncregion)
         elseif isa(el, SSAValue)
             body[i] = SSAValue(el.id + ssachangemap[el.id])
+        elseif isa(el, PhiNode)
+            i = 1
+            edges = el.edges
+            values = el.values
+            while i <= length(edges)
+                was_deleted = ssachangemap[edges[i]] == typemin(Int)
+                if was_deleted
+                    deleteat!(edges, i)
+                    deleteat!(values, i)
+                else
+                    edges[i] += ssachangemap[edges[i]]
+                    val = values[i]
+                    if isa(val, SSAValue)
+                        values[i] = SSAValue(val.id + ssachangemap[val.id])
+                    end
+                    i += 1
+                end
+            end
         elseif isa(el, Expr)
             if el.head === :(=) && el.args[2] isa Expr
                 el = el.args[2]::Expr
