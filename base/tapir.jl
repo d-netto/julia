@@ -28,49 +28,38 @@ mutable struct PBag <: AbstractBag
     PBag() = (self = new(); self.parent = self)
 end
 
-mutable struct TaskCounter
-    current_task::Union{Nothing, SBag}
-    used_task_ids::Set{Int}
-
-    TaskCounter() = new(nothing, Set{Int}())
-end
-
 mutable struct BagHolder
     s_bag::SBag
     p_bag::PBag
 end
 
-mutable struct ExecutionState
-    task_counter::TaskCounter
+mutable struct TapirState
+    current_task::Union{Nothing, SBag}
+    max_spawned_task::Int
     task_id_to_bags::Dict{Int, BagHolder}
     debug::Bool
 
-    ExecutionState(debug) = new(TaskCounter(), Dict{Int, BagHolder}(), debug)
+    TapirState(debug) = new(nothing, 0, Dict{Int, BagHolder}(), debug)
 end
 
-global execution_state = ExecutionState(false)
+global execution_state = TapirState(false)
 
 function init_debug()
-    global execution_state = ExecutionState(true)
+    global execution_state = TapirState(true)
     next_available_task_id()
 end
 
 function kill_debug()
-    global execution_state = ExecutionState(false)
+    global execution_state = TapirState(false)
     next_available_task_id()
 end
 
 function next_available_task_id()
     global execution_state
-    used_task_ids = execution_state.task_counter.used_task_ids
-    id = 1
-    while (id in used_task_ids)
-        id += 1
-    end
-    s_bag = SBag(id, execution_state.task_counter.current_task)
+    id = (execution_state.max_spawned_task += 1)
+    s_bag = SBag(id, execution_state.current_task)
     p_bag = PBag()
-    execution_state.task_counter.current_task = s_bag
-    push!(used_task_ids, id)
+    execution_state.current_task = s_bag
     push!(execution_state.task_id_to_bags, id => BagHolder(s_bag, p_bag))
 end
 
@@ -104,11 +93,11 @@ function spawn!(tasks::TaskGroup, @nospecialize(f))
         next_available_task_id()
         schedule(t)
         wait(t)
-        s_bag_spawned_task = execution_state.task_counter.current_task
+        s_bag_spawned_task = execution_state.current_task
         s_bag_caller_task = s_bag_spawned_task.spawned_by
         p_bag_caller_task = execution_state.task_id_to_bags[s_bag_caller_task.task_id].p_bag
         union_bag!(p_bag_caller_task, s_bag_spawned_task)
-        execution_state.task_counter.current_task = s_bag_caller_task
+        execution_state.current_task = s_bag_caller_task
     else
         schedule(t)
         push!(tasks, t)
@@ -123,11 +112,11 @@ function spawn(::Type{TaskGroup}, @nospecialize(f))
         next_available_task_id()
         schedule(t)
         wait(t)
-        s_bag_spawned_task = execution_state.task_counter.current_task
+        s_bag_spawned_task = execution_state.current_task
         s_bag_caller_task = s_bag_spawned_task.spawned_by
         p_bag_caller_task = execution_state.task_id_to_bags[s_bag_caller_task.task_id].p_bag
         union_bag!(p_bag_caller_task, s_bag_spawned_task)
-        execution_state.task_counter.current_task = s_bag_caller_task
+        execution_state.current_task = s_bag_caller_task
     else
         schedule(t)
     end
@@ -137,12 +126,12 @@ end
 function handle_sync()
     global execution_state
     if execution_state.debug
-        current_task = execution_state.task_counter.current_task
+        current_task = execution_state.current_task
         # during a sync in a procedure, perform a union between the procedure's SBag and its PBag
         union_bag!(current_task, execution_state.task_id_to_bags[current_task.task_id].p_bag)
         # also, empty out the procedure's PBag
         execution_state.task_id_to_bags[current_task.task_id].p_bag = PBag()
-        execution_state.task_counter.current_task = current_task
+        execution_state.current_task = current_task
     end
 end
 
@@ -201,8 +190,9 @@ function read_from_ref(ref::MyOutputRef)
     if execution_state.debug
         if find_bag!(ref.writer) isa PBag
             @warn("Potential race in Tapir variable")
+        else
+            ref.reader = execution_state.current_task
         end
-        ref.reader = execution_state.task_counter.current_task
     end
     return ref.x
 end
@@ -213,7 +203,7 @@ function write_to_ref!(ref::MyOutputRef, x)
         if find_bag!(ref.reader) isa PBag || find_bag!(ref.writer) isa PBag
             @warn("Potential race in Tapir variable")
         end
-        ref.writer = execution_state.task_counter.current_task
+        ref.writer = execution_state.current_task
     end
     ref.x = x
     return ref
