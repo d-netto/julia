@@ -706,3 +706,178 @@ function nested_syncs()
 end
 
 end # module TaskGroupOptimizations
+
+module RaceDetectionTests
+using Base.Experimental: Tapir
+using Test
+
+function f_1()
+    Tapir.@output x
+    Tapir.@sync begin
+        Tapir.@spawn x = 2
+        x = 4
+    end
+    return x + 1
+end
+
+Tapir.init_debug()
+@test_warn "Potential race in Tapir variable" f_1()
+
+### Test 02: should not throw a warning ###
+
+function f_2()
+    Tapir.@output x y
+    Tapir.@sync begin
+        Tapir.@spawn x = 2
+        y = 4
+    end
+    return x + y
+end
+
+Tapir.init_debug()
+@test_no_warn f_2()
+
+### Test 03: variable z is written by the same "thread" in which it was created --> should not throw a warning ###
+
+function f_3()
+    Tapir.@output x y
+    local z
+    Tapir.@sync begin
+        Tapir.@spawn x = 2
+        y = 4
+        z = 4
+    end
+    return x + y + z
+end
+
+Tapir.init_debug()
+@test_no_warn f_3()
+
+### Test 04: variable z is written by the different "thread" from the one it was created --> should throw a warning  ###
+
+function f_4()
+    Tapir.@output x y
+    local z
+    Tapir.@sync begin
+        Tapir.@spawn x = 2
+        y = 4
+        Tapir.@spawn z = 5
+    end
+    return x + y + z
+end
+
+Tapir.init_debug()
+@test_throws TapirRaceError f_4()
+
+### Test 05: should not throw a warning ###
+
+function f_5(bool)
+    Tapir.@output x
+    Tapir.@sync begin
+        if bool
+            Tapir.@spawn x = 1
+        else
+            Tapir.@spawn x = 2
+        end
+    end
+    return x + 2
+end
+
+Tapir.init_debug()
+@test_no_warn f_5(true)
+
+### Test 06: should not throw a warning ###
+
+function f_6(bool)
+    Tapir.@output x y
+    Tapir.@sync begin
+        if bool
+            Tapir.@spawn x = 1
+            y = 2
+        else
+            Tapir.@spawn y = 2
+            x = 3
+        end
+    end
+    return x + y
+end
+
+Tapir.init_debug()
+@test_no_warn f_6(true)
+
+### Test 07: race condition in x and y --> should throw a warning ###
+
+function f_7()
+    Tapir.@output x y
+    Tapir.@sync begin
+        Tapir.@spawn begin
+            Tapir.@spawn x = 2
+            y = 3
+        end
+        x = 4
+        y = 5
+    end
+    return x + y
+end
+
+Tapir.init_debug()
+@test_warn "Potential race in Tapir variable" f_7()
+
+### Test 08: should not throw a warning ###
+
+function f_8(bool)
+    Tapir.@output x y
+    Tapir.@sync begin
+        if bool
+            Tapir.@spawn begin
+                Tapir.@spawn x = 2
+                y = 3
+            end
+        else
+            x = 4
+            y = 5
+        end
+    end
+    return x + y
+end
+
+Tapir.init_debug()
+@test_no_warn f_8(true)
+
+### Test 09: should not throw a warning ###
+
+function f_9(bool)
+    Tapir.@output x
+    Tapir.@sync begin
+        Tapir.@spawn begin
+            if bool
+                Tapir.@spawn x = 2
+            else
+                Tapir.@spawn x = 4
+            end
+        end
+    end
+    return x + 1
+end
+
+Tapir.init_debug()
+@test_no_warn f_9(true)
+
+### Test 09: should throw a warning ###
+
+function f_10()
+    Tapir.@output x = 0 y = 1
+    Tapir.@sync begin
+        for i in 1:10
+            if i == 1
+                Tapir.@spawn x += i
+            elseif i == 2
+                Tapir.@spawn y += i
+            end
+        end
+    end
+    return x + 1
+end
+
+Tapir.init_debug()
+@test_no_warn f_10()

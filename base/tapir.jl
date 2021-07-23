@@ -44,8 +44,8 @@ mutable struct SymbolicTask
 end
 
 """
-Note: s_bag is a SymbolicTask since SymbolicTask's are elements/representatives of sets, and the is_p_bag field of
-the root of a disjoint set tree contains information about whether the tree represents a SBag/PBag
+Note: s_bag/p_bag are SymbolicTask's since SymbolicTask's are elements/representatives of sets, and the is_p_bag field of
+the root of a disjoint set tree encodes whether the given tree represents a SBag/PBag
 """
 mutable struct BagHolder
     s_bag::SymbolicTask
@@ -148,6 +148,7 @@ function spawn(::Type{TaskGroup}, @nospecialize(f))
         # caller task must be the representative of a SBag
         @assert caller_task.parent === caller_task && !(caller_task.is_p_bag)
         p_bag_caller_task = execution_state.task_id_to_bags[caller_task.task_id].p_bag
+        # PBag of a caller task must be the empty (=== nothing) or a representative of its own set
         @assert p_bag_caller_task === nothing || (p_bag_caller_task.parent === p_bag_caller_task && p_bag_caller_task.is_p_bag)
         union_in_spawn!(p_bag_caller_task, spawned_task)
         execution_state.current_task = caller_task
