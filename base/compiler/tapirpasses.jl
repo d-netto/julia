@@ -849,7 +849,7 @@ end
 """
     allocate_task_output!(ir::IRCode, t::Type, name::Symbol) -> output::TaskOutput
 
-Insert `Tapir.MyOutputRef`s for representing a task.
+Insert `Tapir.OutputRef`s for representing a task.
 
 Immutable aggregate types are decomposed into scalars to promote downstream optimizations.
 """
@@ -859,7 +859,7 @@ function allocate_task_output!(ir::IRCode, @nospecialize(t::Type), name::Symbol)
         @nospecialize
         args::Union{Tuple{}, Tuple{Any}}
         alloc_pos = 1   # [^alloca-position]
-        R = Tapir.MyOutputRef{t}
+        R = Tapir.OutputRef{t}
         ref = insert_node!(ir, alloc_pos, NewInstruction(Expr(:call, R, args...), R))
         stmt_at(ir, ref.id)[:flag] = IR_FLAG_EFFECT_FREE
         return ref
@@ -1276,10 +1276,10 @@ function tapir_dead_store_elimination_pass!(ir::IRCode)
         ir = compact!(ir)
     end
 
-    (; MyOutputRef) = Tapir
+    (; OutputRef) = Tapir
     function is_ref_allocation(ref::SSAValue)
         local stmt = ir.stmts[ref.id]
-        return widenconst(stmt[:type]) <: MyOutputRef && isexpr(stmt[:inst], :new)
+        return widenconst(stmt[:type]) <: OutputRef && isexpr(stmt[:inst], :new)
     end
 
     stores = IdDict{Int,Vector{Int}}()  # ref SSA position -> setter positions

@@ -14,27 +14,46 @@ module Tapir
 
 abstract type AbstractBag end
 
-mutable struct SBag <: AbstractBag
+"""
+Type representing the symbolic task defined by each spawned process in a execution of SP-bags.
+
+1. spawned_by represents the SymbolicTask that "spawned" a given SymbolicTask
+2. parent represents the actual parent node in a disjoint set tree. In case of an operation
+A <- A ∪ B (with A and B distinct), the parent of the root of the disjoint set tree defined by
+B is assigned to the root of the disjoint set tree defined by A
+3. is_p_bag is only relevant if the SymbolicTask is a root (that's it, parent_bag is itself) in one of
+the disjoint set trees. In that case, it indicates whether the disjoint set tree represents a
+PBag
+"""
+mutable struct SymbolicTask
     task_id::Int
-    spawned_by::Union{Nothing, SBag}
-    parent::AbstractBag
+    spawned_by::Union{Nothing, SymbolicTask}
+    parent::Union{SymbolicTask}
+    is_p_bag::Bool
 
-    SBag(task_id, spawned_by) = (self = new(); self.task_id = task_id; self.spawned_by = spawned_by; self.parent = self)
+    function SymbolicTask(task_id, spawned_by)
+        self = new()
+        self.task_id = task_id
+        self.spawned_by = spawned_by
+        # whenever a SymbolicTask is created, the set to which is associated is necessarily a SBag
+        # and contains only this task
+        self.parent = self
+        is_p_bag = false
+        return self
+    end
 end
 
-mutable struct PBag <: AbstractBag
-    parent::AbstractBag
-
-    PBag() = (self = new(); self.parent = self)
-end
-
+"""
+Note: s_bag is a SymbolicTask since SymbolicTask's are elements/representatives of sets, and the is_p_bag field of
+the root of a disjoint set tree contains information about whether the tree represents a SBag/PBag
+"""
 mutable struct BagHolder
-    s_bag::SBag
-    p_bag::PBag
+    s_bag::SymbolicTask
+    p_bag::Union{Nothing, SymbolicTask}
 end
 
 mutable struct TapirState
-    current_task::Union{Nothing, SBag}
+    current_task::Union{Nothing, SymbolicTask}
     max_spawned_task::Int
     task_id_to_bags::Dict{Int, BagHolder}
     debug::Bool
@@ -51,34 +70,42 @@ end
 
 function kill_debug()
     global execution_state = TapirState(false)
-    next_available_task_id()
 end
 
 function next_available_task_id()
     global execution_state
     id = (execution_state.max_spawned_task += 1)
-    s_bag = SBag(id, execution_state.current_task)
-    p_bag = PBag()
-    execution_state.current_task = s_bag
-    push!(execution_state.task_id_to_bags, id => BagHolder(s_bag, p_bag))
+    spawned_task = SymbolicTask(id, execution_state.current_task)
+    # when a new symbolic task is created, its PBag is empty (=== nothing)
+    push!(execution_state.task_id_to_bags, id => BagHolder(spawned_task, nothing))
+    execution_state.current_task = SymbolicTask(id, execution_state.current_task)
 end
 
-function find_bag!(bag)
-    if bag === nothing || bag.parent === bag
+function find_set!(symbolic_task::SymbolicTask)
+    if bag.parent === bag
         return bag
     else
-        bag.parent = find_bag!(bag.parent)
+        bag.parent = find_set!(bag.parent)
         return bag.parent
     end
 end
 
-function union_bag!(bag_1, bag_2)
-    if bag_1 === nothing || bag_2 === nothing
-        return
+function union_in_spawn!(symbolic_task_1::SymbolicTask, symbolic_task_2::SymbolicTask)
+    # Covers the case of an initially empty PBag
+    if symbolic_task_1 === nothing
+        symbolic_task_1 = symbolic_task_2
+        symbolic_task_1.is_p_bag = true
+    else
+        symbolic_task_2.parent = symbolic_task_1
     end
-    # TODO: check if this invariant should always hold under the paper conditions
-    @assert bag_1.parent === bag_1 && bag_2.parent === bag_2
-    bag_2.parent = bag_1
+end
+
+function union_in_sync!(symbolic_task_1::SymbolicTask, symbolic_task_2::SymbolicTask)
+    # Covers the case of a initially non-empty PBag
+    if symbolic_task_2 !== nothing
+        symbolic_task_2.parent = symbolic_task_1
+        symbolic_task_2 = nothing
+    end
 end
 
 # TODO: Use unprotected tree to avoid locks in spawn and sync
@@ -93,11 +120,15 @@ function spawn!(tasks::TaskGroup, @nospecialize(f))
         next_available_task_id()
         schedule(t)
         wait(t)
-        s_bag_spawned_task = execution_state.current_task
-        s_bag_caller_task = s_bag_spawned_task.spawned_by
-        p_bag_caller_task = execution_state.task_id_to_bags[s_bag_caller_task.task_id].p_bag
-        union_bag!(p_bag_caller_task, s_bag_spawned_task)
-        execution_state.current_task = s_bag_caller_task
+        spawned_task = execution_state.current_task
+        caller_task = spawned_task.spawned_by
+        # caller task must be the representative of a SBag
+        @assert caller_task.parent === caller_task && !(caller_task.is_p_bag)
+        p_bag_caller_task = execution_state.task_id_to_bags[caller_task.task_id].p_bagSBag
+        # PBag of a caller task must be the empty (=== nothing) or a representative of its own set
+        @assert p_bag_caller_task === nothing || (p_bag_caller_task.parent === cap_bag_caller_taskller_task && p_bag_caller_task.is_p_bag)
+        union_in_spawn!(p_bag_caller_task, spawned_task)
+        execution_state.current_task = caller_task
     else
         schedule(t)
         push!(tasks, t)
@@ -112,11 +143,14 @@ function spawn(::Type{TaskGroup}, @nospecialize(f))
         next_available_task_id()
         schedule(t)
         wait(t)
-        s_bag_spawned_task = execution_state.current_task
-        s_bag_caller_task = s_bag_spawned_task.spawned_by
-        p_bag_caller_task = execution_state.task_id_to_bags[s_bag_caller_task.task_id].p_bag
-        union_bag!(p_bag_caller_task, s_bag_spawned_task)
-        execution_state.current_task = s_bag_caller_task
+        spawned_task = execution_state.current_task
+        caller_task = spawned_task.spawned_by
+        # caller task must be the representative of a SBag
+        @assert caller_task.parent === caller_task && !(caller_task.is_p_bag)
+        p_bag_caller_task = execution_state.task_id_to_bags[caller_task.task_id].p_bag
+        @assert p_bag_caller_task === nothing || (p_bag_caller_task.parent === p_bag_caller_task && p_bag_caller_task.is_p_bag)
+        union_in_spawn!(p_bag_caller_task, spawned_task)
+        execution_state.current_task = caller_task
     else
         schedule(t)
     end
@@ -128,9 +162,9 @@ function handle_sync()
     if execution_state.debug
         current_task = execution_state.current_task
         # during a sync in a procedure, perform a union between the procedure's SBag and its PBag
-        union_bag!(current_task, execution_state.task_id_to_bags[current_task.task_id].p_bag)
-        # also, empty out the procedure's PBag
-        execution_state.task_id_to_bags[current_task.task_id].p_bag = PBag()
+        union_in_sync!(current_task, execution_state.task_id_to_bags[current_task.task_id].p_bag)
+        # also, empty out (assign to nothing) the procedure's PBag
+        execution_state.task_id_to_bags[current_task.task_id].p_bag = nothing
         execution_state.current_task = current_task
     end
 end
@@ -177,18 +211,18 @@ end
 
 # Like RefValue, but using a special type for reflections in spawn! etc. that
 # can be useful for custom workgroups (e.g., Distributed-based)
-mutable struct MyOutputRef{T}
+mutable struct OutputRef{T}
     x::T
-    reader::Union{Nothing, SBag}
-    writer::Union{Nothing, SBag}
-    MyOutputRef{T}() where T = (self = new{T}(); self.reader = nothing; self.writer = nothing; return self)
-    MyOutputRef{T}(x) where T = (self = new{T}(); self.x = x; self.reader = nothing; self.writer = nothing; return self)
+    reader::Union{Nothing, SymbolicTask}
+    writer::Union{Nothing, SymbolicTask}
+    OutputRef{T}() where T = (self = new{T}(); self.reader = nothing; self.writer = nothing; return self)
+    OutputRef{T}(x) where T = (self = new{T}(); self.x = x; self.reader = nothing; self.writer = nothing; return self)
 end
 
-function read_from_ref(ref::MyOutputRef)
+function read_from_ref(ref::OutputRef)
     global execution_state
     if execution_state.debug
-        if find_bag!(ref.writer) isa PBag
+        if find_set!(ref.writer).is_p_bag
             @warn("Potential race in Tapir variable")
         else
             ref.reader = execution_state.current_task
@@ -197,10 +231,10 @@ function read_from_ref(ref::MyOutputRef)
     return ref.x
 end
 
-function write_to_ref!(ref::MyOutputRef, x)
+function write_to_ref!(ref::OutputRef, x)
     global execution_state
     if execution_state.debug
-        if find_bag!(ref.reader) isa PBag || find_bag!(ref.writer) isa PBag
+        if find_set!(ref.reader).is_p_bag || find_set!(ref.writer).is_p_bag
             @warn("Potential race in Tapir variable")
         end
         ref.writer = execution_state.current_task
