@@ -19,7 +19,7 @@
 
 #include "julia_assert.h"
 
-// #define PARALLEL_GC_SIG
+#define PARALLEL_GC_SIG
 
 // private keymgr stuff
 #define KEYMGR_GCC3_DW2_OBJ_LIST 302

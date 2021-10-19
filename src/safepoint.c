@@ -11,7 +11,7 @@
 #endif
 #include "julia_assert.h"
 
-// #define PARALLEL_GC_SP
+#define PARALLEL_GC_SP
 
 #ifdef __cplusplus
 extern "C" {
