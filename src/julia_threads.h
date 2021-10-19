@@ -348,18 +348,19 @@ JL_DLLEXPORT void (jl_gc_safepoint)(void);
 // Either NULL, or the address of a function that threads can call while
 // waiting for the GC, which will recruit them into a concurrent GC operation.
 extern void *jl_gc_recruiting_location;
-STATIC_INLINE void jl_gc_try_recruit(jl_ptls_t ptls)
+STATIC_INLINE int jl_gc_try_recruit(jl_ptls_t ptls)
 {
     // Try to get recruited for parallel GC work
-    if (jl_atomic_load_relaxed(&jl_gc_recruiting_location)) {
-        int8_t old_state = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
-        void *location = jl_atomic_load_acquire(&jl_gc_recruiting_location);
-        if (location) {
-            // Success! Go do something useful...
-            ((void (*)(jl_ptls_t))location)(ptls);
-        }
-        jl_gc_state_set(ptls, old_state, JL_GC_STATE_PARALLEL);
+    if (!jl_atomic_load_relaxed(&jl_gc_recruiting_location))
+        return 0;
+    int8_t old_state = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
+    void *location = jl_atomic_load_acquire(&jl_gc_recruiting_location);
+    if (location) {
+        // Success! Go do something useful...
+        ((void (*)(jl_ptls_t))location)(ptls);
     }
+    jl_gc_state_set(ptls, old_state, JL_GC_STATE_PARALLEL);
+    return 1;
 }
 
 JL_DLLEXPORT void jl_gc_enable_finalizers(struct _jl_task_t *ct, int on);

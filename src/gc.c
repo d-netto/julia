@@ -11,6 +11,8 @@
 extern "C" {
 #endif
 
+// #define PARALLEL_GC_DEBUG
+
 // Linked list of callback functions
 
 typedef void (*jl_gc_cb_func_t)(void);
@@ -2177,13 +2179,17 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     char stolen = 0;
 
     unsigned long long entries = sp.pc - sp.pc_start;
+    #ifdef PARALLEL_GC_DEBUG
     if (entries)
         fprintf(stderr, "[%d] Entering mark loop with %lld entries\n", ptls->tid, entries);
+    #endif
 
 pop:
     if (sp.pc == sp.pc_start) {
+        #ifdef PARALLEL_GC_DEBUG
         if (entries)
             fprintf(stderr, "[%d] Exiting mark loop\n", ptls->tid);
+        #endif
         export_gc_state(ptls, &sp);
         return;
         /* FIXME: steal some work from another thread, if available
@@ -3063,7 +3069,8 @@ void jl_gc_set_recruit(jl_ptls_t ptls, void *addr)
             continue;
         jl_wakeup_thread(i);
         jl_ptls_t ptls2 = jl_all_tls_states[i];
-        while (jl_atomic_load_relaxed(&ptls2->gc_state) != JL_GC_STATE_PARALLEL &&              jl_atomic_load_acquire(&ptls2->gc_state) != JL_GC_STATE_PARALLEL)
+        while (jl_atomic_load_relaxed(&ptls2->gc_state) != JL_GC_STATE_PARALLEL && 
+               jl_atomic_load_acquire(&ptls2->gc_state) != JL_GC_STATE_PARALLEL)
             jl_cpu_pause();
     }
 }
@@ -3081,7 +3088,7 @@ void jl_gc_clear_recruit(jl_ptls_t ptls)
 }
 
 static void gc_mark_loop_recruited(jl_ptls_t ptls)
-{
+{   
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
     jl_gc_mark_sp_t sp;
     import_gc_state(ptls, &sp);
@@ -3094,7 +3101,9 @@ static void gc_mark_loop_recruited(jl_ptls_t ptls)
 // paused).
 static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 {
+#ifdef PARALLEL_GC_DEBUG
     fprintf(stderr, "[%d] GC cycle started!\n", ptls->tid);
+#endif
     combine_thread_gc_counts(&gc_num);
 
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
@@ -3110,26 +3119,33 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
-
         // 2.1. mark every object in the `last_remsets` and `rem_binding`
-        jl_gc_queue_remset(gc_cache, &sp, ptls2);
-
         // 2.2. mark every thread local root
-        // N.B. enqueued on associated thread
-        jl_gc_mark_cache_t *gc_cache2 = &ptls2->gc_cache;
-        jl_gc_mark_sp_t sp2;
-        gc_mark_sp_init(gc_cache2, &sp2);
-        jl_gc_queue_thread_local(gc_cache2, &sp2, ptls2);
-        export_gc_state(ptls2, &sp2);
-
+        // jl_gc_queue_thread_local(gc_cache, &sp, ptls2);
         // 2.3. mark any managed objects in the backtrace buffer
-        jl_gc_queue_bt_buf(gc_cache, &sp, ptls2);
-    }
 
+        // N.B. enqueued on associated thread
+        if (t_i == ptls->tid) {
+            jl_gc_queue_remset(gc_cache, &sp, ptls2);
+            jl_gc_queue_thread_local(gc_cache, &sp, ptls2);
+            jl_gc_queue_bt_buf(gc_cache, &sp, ptls2);
+        } 
+        else {
+            // TODO: threads that are currently in GC safe regions?
+            jl_gc_mark_cache_t *gc_cache2 = &ptls2->gc_cache;
+            jl_gc_mark_sp_t sp2;
+            gc_mark_sp_init(gc_cache2, &sp2);
+            jl_gc_queue_remset(gc_cache2, &sp2, ptls2);
+            jl_gc_queue_thread_local(gc_cache2, &sp2, ptls2);
+            jl_gc_queue_bt_buf(gc_cache2, &sp2, ptls2);
+            export_gc_state(ptls2, &sp2);
+        }
+    }
     // 3. walk roots
     mark_roots(gc_cache, &sp);
     if (gc_cblist_root_scanner) {
         export_gc_state(ptls, &sp);
+        // TODO: does it need to see the state of all threads?
         gc_invoke_callbacks(jl_gc_cb_root_scanner_t,
             gc_cblist_root_scanner, (collection));
         import_gc_state(ptls, &sp);
@@ -3137,9 +3153,13 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     export_gc_state(ptls, &sp);
     jl_gc_set_recruit(ptls, (void *)gc_mark_loop_recruited);
     int8_t old_state = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
+#ifdef PARALLEL_GC_DEBUG
     fprintf(stderr, "[%d] Starting mark with pc %llx and start %llx\n", ptls->tid, sp.pc, sp.pc_start);
+#endif
     gc_mark_loop(ptls, sp);
+#ifdef PARALLEL_GC_DEBUG
     fprintf(stderr, "[%d] Ended mark with pc %llx and start %llx\n", ptls->tid, sp.pc, sp.pc_start);
+#endif
     jl_gc_state_set(ptls, old_state, JL_GC_STATE_PARALLEL);
     jl_gc_clear_recruit(ptls);
     gc_mark_sp_init(gc_cache, &sp);
@@ -3249,7 +3269,9 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         perm_scanned_bytes = 0;
     scanned_bytes = 0;
     // 5. start sweeping
+#ifdef PARALLEL_GC_DEBUG
     fprintf(stderr, "[%d] Sweep started\n", ptls->tid);
+#endif
     sweep_weak_refs();
     sweep_stack_pools();
     gc_sweep_foreign_objs();
@@ -3259,7 +3281,9 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     gc_sweep_pool(sweep_full);
     if (sweep_full)
         gc_sweep_perm_alloc();
+#ifdef PARALLEL_GC_DEBUG
     fprintf(stderr, "[%d] Sweep ended\n", ptls->tid);
+#endif
     // sweeping is over
     // 6. if it is a quick sweep, put back the remembered objects in queued state
     // so that we don't trigger the barrier again on them.
@@ -3311,8 +3335,9 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     gc_num.since_sweep = 0;
     gc_num.freed = 0;
     reset_thread_gc_counts();
-
+#ifdef PARALLEL_GC_DEBUG
     fprintf(stderr, "[%d] GC cycle done!\n", ptls->tid);
+#endif
     return recollect;
 }
 
@@ -3320,12 +3345,16 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
 {
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
+#ifdef PARALLEL_GC_DEBUG
     fprintf(stderr, "[%d] Outer GC cycle started!\n", ptls->tid);
+#endif
     if (jl_gc_disable_counter) {
         size_t localbytes = ptls->gc_num.allocd + gc_num.interval;
         ptls->gc_num.allocd = -(int64_t)gc_num.interval;
         jl_atomic_add_fetch(&gc_num.deferred_alloc, localbytes);
+    #ifdef PARALLEL_GC_DEBUG
         fprintf(stderr, "[%d] Outer GC cycle done!\n", ptls->tid);
+    #endif
         return;
     }
     gc_debug_print();
@@ -3337,7 +3366,9 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
     if (!jl_safepoint_start_gc()) {
         // Multithread only. See assertion in `safepoint.c`
         jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+    #ifdef PARALLEL_GC_DEBUG
         fprintf(stderr, "[%d] Outer GC cycle done!\n", ptls->tid);
+    #endif
         return;
     }
     JL_TIMING(GC);
@@ -3352,7 +3383,6 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
     jl_gc_wait_for_the_world();
     gc_invoke_callbacks(jl_gc_cb_pre_gc_t,
         gc_cblist_pre_gc, (collection));
-
     if (!jl_gc_disable_counter) {
         JL_LOCK_NOGC(&finalizers_lock);
         if (_jl_gc_collect(ptls, collection)) {
@@ -3383,7 +3413,9 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
     SetLastError(last_error);
 #endif
     errno = last_errno;
+#ifdef PARALLEL_GC_DEBUG
     fprintf(stderr, "[%d] Outer GC cycle done!\n", ptls->tid);
+#endif
 }
 
 void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_mark_sp_t *sp)

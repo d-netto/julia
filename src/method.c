@@ -256,7 +256,7 @@ void jl_resolve_globals_in_ir(jl_array_t *stmts, jl_module_t *m, jl_svec_t *spar
 // copy a :lambda Expr into its CodeInfo representation,
 // including popping of known meta nodes
 static void jl_code_info_set_ir(jl_code_info_t *li, jl_expr_t *ir)
-{
+{   
     assert(jl_is_expr(ir));
     jl_expr_t *bodyex = (jl_expr_t*)jl_exprarg(ir, 2);
     jl_value_t *codelocs = jl_exprarg(ir, 3);

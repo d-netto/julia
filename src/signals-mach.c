@@ -19,6 +19,8 @@
 
 #include "julia_assert.h"
 
+// #define PARALLEL_GC_SIG
+
 // private keymgr stuff
 #define KEYMGR_GCC3_DW2_OBJ_LIST 302
 enum {
@@ -53,23 +55,35 @@ void jl_mach_gc_end(void)
 // Otherwise return `0`
 static int jl_mach_gc_wait(jl_ptls_t ptls2,
                            mach_port_t thread, int16_t tid)
-{
-    jl_mutex_lock_nogc(&safepoint_lock);
-    if (!jl_atomic_load_relaxed(&jl_gc_running)) {
-        // relaxed, since gets set to zero only while the safepoint_lock was held
-        // this means we can tell if GC is done before we got the message or
-        // the safepoint was enabled for SIGINT.
-        jl_mutex_unlock_nogc(&safepoint_lock);
-        return 0;
-    }
-    // Otherwise, set the gc state of the thread, suspend and record it
+{   
+    #ifndef PARALLEL_GC_SIG
+        jl_mutex_lock_nogc(&safepoint_lock);
+        if (!jl_atomic_load_relaxed(&jl_gc_running)) {
+            // relaxed, since gets set to zero only while the safepoint_lock was held
+            // this means we can tell if GC is done before we got the message or
+            // the safepoint was enabled for SIGINT.
+            jl_mutex_unlock_nogc(&safepoint_lock);
+            return 0;
+        }
+    #endif
     int8_t gc_state = ptls2->gc_state;
     jl_atomic_store_release(&ptls2->gc_state, JL_GC_STATE_WAITING);
-    uintptr_t item = tid | (((uintptr_t)gc_state) << 16);
-    arraylist_push(&suspended_threads, (void*)item);
-    thread_suspend(thread);
-    jl_mutex_unlock_nogc(&safepoint_lock);
-    return 1;
+    #ifdef PARALLEL_GC_SIG
+        while (jl_atomic_load_relaxed(&jl_gc_running) || jl_atomic_load_acquire(&jl_gc_running)) {
+            if (jl_gc_try_recruit(ptls2)) {
+                jl_atomic_store_release(&ptls2->gc_state, gc_state);
+                return 1;
+            }
+        }
+        jl_atomic_store_release(&ptls2->gc_state, gc_state);
+        return 0;
+    #else
+        uintptr_t item = tid | (((uintptr_t)gc_state) << 16);
+        arraylist_push(&suspended_threads, (void*)item);
+        thread_suspend(thread);
+        jl_mutex_unlock_nogc(&safepoint_lock);
+        return 1;
+    #endif
 }
 
 static mach_port_t segv_port = 0;

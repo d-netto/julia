@@ -354,7 +354,7 @@ static void wake_libuv(void)
 
 /* ensure thread tid is awake if necessary */
 JL_DLLEXPORT void jl_wakeup_thread(int16_t tid)
-{
+{   
     jl_ptls_t ptls = jl_current_task->ptls;
     jl_thread_t uvlock = jl_atomic_load(&jl_uv_mutex.owner);
     int16_t self = ptls->tid;

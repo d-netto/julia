@@ -11,6 +11,8 @@
 #endif
 #include "julia_assert.h"
 
+// #define PARALLEL_GC_SP
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -152,7 +154,9 @@ void jl_safepoint_end_gc(void)
     jl_atomic_store_release(&jl_gc_running, 0);
 #  ifdef __APPLE__
     // This wakes up other threads on mac.
-    jl_mach_gc_end();
+    #ifndef PARALLEL_GC_SP
+        jl_mach_gc_end();
+    #endif
 #  endif
     jl_mutex_unlock_nogc(&safepoint_lock);
 }
