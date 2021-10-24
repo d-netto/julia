@@ -204,8 +204,9 @@ static void jl_gc_wait_for_the_world(void)
         // We're currently also using atomic store release in mutator threads
         // (in jl_gc_state_set), but we may want to use signals to flush the
         // memory operations on those threads lazily instead.
-        while (!jl_atomic_load_relaxed(&ptls2->gc_state) || !jl_atomic_load_acquire(&ptls2->gc_state))
+        while (!jl_atomic_load_relaxed(&ptls2->gc_state) || !jl_atomic_load_acquire(&ptls2->gc_state)) {
             jl_cpu_pause(); // yield?
+        }
     }
 }
 
@@ -3076,7 +3077,6 @@ void jl_gc_set_recruit(jl_ptls_t ptls, void *addr)
 }
 void jl_gc_clear_recruit(jl_ptls_t ptls)
 {
-    jl_atomic_store_relaxed(&jl_gc_recruiting_location, NULL);
     for (int i = 0; i < jl_n_threads; i++) {
         if (i == ptls->tid)
             continue;
@@ -3085,6 +3085,7 @@ void jl_gc_clear_recruit(jl_ptls_t ptls)
                jl_atomic_load_acquire(&ptls2->gc_state) == JL_GC_STATE_PARALLEL)
             jl_cpu_pause();
     }
+    jl_atomic_store_relaxed(&jl_gc_recruiting_location, NULL);
 }
 
 static void gc_mark_loop_recruited(jl_ptls_t ptls)
@@ -3380,7 +3381,7 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
     // we can do a few things that doesn't require synchronization.
     // TODO (concurrently queue objects)
     // no-op for non-threading
-    jl_gc_wait_for_the_world();
+    // jl_gc_wait_for_the_world();
     gc_invoke_callbacks(jl_gc_cb_pre_gc_t,
         gc_cblist_pre_gc, (collection));
     if (!jl_gc_disable_counter) {
