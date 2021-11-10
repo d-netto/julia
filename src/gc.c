@@ -2039,6 +2039,7 @@ STATIC_INLINE int gc_mark_scan_obj32(jl_ptls_t ptls, jl_gc_mark_sp_t *sp, gc_mar
 #else
 #define gc_mark_laddr(name) ((void*)(uintptr_t)GC_MARK_L_##name)
 #define gc_mark_jmp(ptr) do {                   \
+        if (!jl_atomic_load(jl_gc_recruiting_location)) return; \
         switch ((int)(uintptr_t)ptr) {          \
         case GC_MARK_L_marked_obj:              \
             goto marked_obj;                    \
@@ -3078,14 +3079,14 @@ void jl_gc_set_recruit(jl_ptls_t ptls, void *addr)
 void jl_gc_clear_recruit(jl_ptls_t ptls)
 {
     jl_atomic_store_relaxed(&jl_gc_recruiting_location, NULL);
-    // for (int i = 0; i < jl_n_threads; i++) {
-    //     if (i == ptls->tid)
-    //         continue;
-    //     jl_ptls_t ptls2 = jl_all_tls_states[i];
-    //     while (jl_atomic_load_relaxed(&ptls2->gc_state) == JL_GC_STATE_PARALLEL &&
-    //            jl_atomic_load_acquire(&ptls2->gc_state) == JL_GC_STATE_PARALLEL)
-    //         jl_cpu_pause();
-    // }
+    for (int i = 0; i < jl_n_threads; i++) {
+        if (i == ptls->tid)
+            continue;
+        jl_ptls_t ptls2 = jl_all_tls_states[i];
+        while (jl_atomic_load_relaxed(&ptls2->gc_state) == JL_GC_STATE_PARALLEL &&
+               jl_atomic_load_acquire(&ptls2->gc_state) == JL_GC_STATE_PARALLEL)
+            jl_cpu_pause();
+    }
 }
 
 static void gc_mark_loop_recruited(jl_ptls_t ptls)
@@ -3095,8 +3096,10 @@ static void gc_mark_loop_recruited(jl_ptls_t ptls)
     #endif
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
     jl_gc_mark_sp_t sp;
-    import_gc_state(ptls, &sp);
-    //jl_gc_mark_enqueued_tasks(gc_cache, &sp);
+    gc_mark_sp_init(gc_cache, &sp);
+    jl_gc_queue_remset(gc_cache, &sp, ptls);
+    jl_gc_queue_thread_local(gc_cache, &sp, ptls);
+    jl_gc_queue_bt_buf(gc_cache, &sp, ptls);
     gc_mark_loop(ptls, sp);
 }
 
@@ -3122,43 +3125,30 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         jl_gc_premark(jl_all_tls_states[t_i]);
 
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
-        jl_ptls_t ptls_i = jl_all_tls_states[t_i];
-        // 2.1. mark every object in the `last_remsets` and `rem_binding`
-        // 2.2. mark every thread local root
-        // jl_gc_queue_thread_local(gc_cache, &sp, ptls2);
-        // 2.3. mark any managed objects in the backtrace buffer
+
+        jl_ptls_t ptls2 = jl_all_tls_states[t_i];
+
+        if (t_i != ptls->tid) {
+            // 2.1. mark every object in the `last_remsets` and `rem_binding`
+            jl_gc_queue_remset(gc_cache, &sp, ptls2);
+            // 2.2. mark every thread local root
+            jl_gc_queue_thread_local(gc_cache, &sp, ptls2);
+            // 2.3. mark any managed objects in the backtrace buffer
+            jl_gc_queue_bt_buf(gc_cache, &sp, ptls2);
+        }
 
         // N.B. enqueued on associated thread
         #ifdef PARALLEL_GC_DEBUG
             fprintf(stderr, "[%d] State of %d: %d\n", ptls->tid, ptls2->tid, ptls2->gc_state);
         #endif
         // TODO: threads that are currently in GC safe regions?
-        if (t_i != ptls->tid) {
-            // Push to the mark-stack of thread that's running _jl_gc_collect
-            jl_gc_queue_remset(gc_cache, &sp, ptls_i);
-            jl_gc_queue_thread_local(gc_cache, &sp, ptls_i);
-            jl_gc_mark_sp_t sp_i;
-            jl_gc_mark_cache_t *gc_cache_i = &ptls_i->gc_cache;
-            gc_mark_sp_init(gc_cache_i, &sp_i);
-            // // Enqueue thread-locals from all other threads in the i-th thread
-            // for (int t_j = 0; t_j < jl_n_threads; t_j++) {
-            //     if (t_j != ptls->tid && t_j != t_i) {
-            //         jl_ptls_t ptls_j = jl_all_tls_states[t_j];
-            //         jl_gc_mark_cache_t *gc_cache_j = &ptls_j->gc_cache;
-            //         jl_gc_queue_thread_local(gc_cache_j, &sp_i, ptls_j);
-            //     }
-            // }
-            // Put thread locals of a given thread at the top of its mark-stack
-            // TODO: double check order of insertion in mark-stack
-            jl_gc_queue_thread_local(gc_cache_i, &sp_i, ptls_i);
-            export_gc_state(ptls_i, &sp_i);
-            jl_gc_queue_bt_buf(gc_cache, &sp, ptls_i);
-        }
     }
 
-    // Handle thread that's running _jl_gc_collect
+    // 2.1. mark every object in the `last_remsets` and `rem_binding`
     jl_gc_queue_remset(gc_cache, &sp, ptls);
+    // 2.2. mark every thread local root
     jl_gc_queue_thread_local(gc_cache, &sp, ptls);
+    // 2.3. mark any managed objects in the backtrace buffer
     jl_gc_queue_bt_buf(gc_cache, &sp, ptls);
 
     // 3. walk roots
@@ -3170,7 +3160,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
             gc_cblist_root_scanner, (collection));
         import_gc_state(ptls, &sp);
     }
-    export_gc_state(ptls, &sp);
+    // export_gc_state(ptls, &sp);
     jl_gc_set_recruit(ptls, (void *)gc_mark_loop_recruited);
     int8_t old_state = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
 #ifdef PARALLEL_GC_DEBUG
