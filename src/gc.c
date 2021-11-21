@@ -3144,11 +3144,8 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         // TODO: threads that are currently in GC safe regions?
     }
 
-    // 2.1. mark every object in the `last_remsets` and `rem_binding`
     jl_gc_queue_remset(gc_cache, &sp, ptls);
-    // 2.2. mark every thread local root
     jl_gc_queue_thread_local(gc_cache, &sp, ptls);
-    // 2.3. mark any managed objects in the backtrace buffer
     jl_gc_queue_bt_buf(gc_cache, &sp, ptls);
 
     // 3. walk roots

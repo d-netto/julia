@@ -513,10 +513,11 @@ JL_DLLEXPORT jl_task_t *jl_task_get_next(jl_value_t *trypoptask, jl_value_t *q)
             JULIA_DEBUG_SLEEPWAKE( ptls->sleep_enter = cycleclock() );
             int8_t gc_state = jl_gc_safe_enter(ptls);
             uv_mutex_lock(&ptls->sleep_lock);
+            int recruited = 0;
             while (may_sleep(ptls)) {
                 uv_cond_wait(&ptls->wake_signal, &ptls->sleep_lock);
                 // TODO: Do we need to unlock?
-                jl_gc_try_recruit(ptls);
+                if (!recruited) recruited = jl_gc_try_recruit(ptls);
             }
             assert(ptls->sleep_check_state == not_sleeping);
             uv_mutex_unlock(&ptls->sleep_lock);
