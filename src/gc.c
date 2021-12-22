@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-// #define PARALLEL_GC_DEBUG
+#define PARALLEL_GC_DEBUG
 
 // Linked list of callback functions
 
@@ -2039,7 +2039,6 @@ STATIC_INLINE int gc_mark_scan_obj32(jl_ptls_t ptls, jl_gc_mark_sp_t *sp, gc_mar
 #else
 #define gc_mark_laddr(name) ((void*)(uintptr_t)GC_MARK_L_##name)
 #define gc_mark_jmp(ptr) do {                   \
-        if (!jl_atomic_load(jl_gc_recruiting_location)) return; \
         switch ((int)(uintptr_t)ptr) {          \
         case GC_MARK_L_marked_obj:              \
             goto marked_obj;                    \
@@ -2159,7 +2158,6 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     uintptr_t tag = 0;
     uint8_t bits = 0;
     int meta_updated = 0;
-    size_t data_size = 0;
 
     gc_mark_objarray_t *objary;
     jl_value_t **objary_begin;
@@ -2178,53 +2176,33 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     uint16_t *obj16_begin;
     uint16_t *obj16_end;
 
-    char stolen = 0;
-
-    unsigned long long entries = sp.pc - sp.pc_start;
-    #ifdef PARALLEL_GC_DEBUG
-    if (entries)
-        fprintf(stderr, "[%d] Entering mark loop with %lld entries\n", ptls->tid, entries);
-    #endif
-
-pop:
+pop: {
     if (sp.pc == sp.pc_start) {
-        #ifdef PARALLEL_GC_DEBUG
-        if (entries)
-            fprintf(stderr, "[%d] Exiting mark loop\n", ptls->tid);
-        #endif
-        export_gc_state(ptls, &sp);
-        return;
-        /* FIXME: steal some work from another thread, if available
         for (int i = 0; i < jl_n_threads; i++) {
             if (i == ptls->tid)
                 continue;
             jl_ptls_t ptls2 = jl_all_tls_states[i];
-            if (jl_atomic_load_relaxed(&ptls2->gc_state) == JL_GC_STATE_PARALLEL &&
-                jl_atomic_load_acquire(&ptls2->gc_state) == JL_GC_STATE_PARALLEL) {
-
-                jl_gc_mark_sp_t sp2 = ptls2->gc_mark_sp;
-                long long pc_start2 = jl_atomic_load_acquire(&sp2.pc_start);
-                long long pc2 = jl_atomic_load_acquire(&sp2.pc);
-                // Check that sp2 has anything
-                // TODO: Check that there are plenty of frames to steal
+            jl_gc_mark_sp_t sp2 = ptls2->gc_mark_sp;
+            void **pc_start2 = jl_atomic_load_acquire(&sp2.pc_start);
+            void **pc2 = jl_atomic_load_acquire(&sp2.pc);
+            #ifdef PARALLEL_GC_DEBUG
                 fprintf(stderr, "[%d] May steal from thread %d: %llx, %llx\n", ptls->tid, i, pc2, pc_start2);
-                if (!pc2 || pc2 == pc_start2)
-                    continue;
-                sp.pc = pc_start2+1;
-                sp.pc_start = pc_start2;
-                sp.data = sp2.data; // FIXME: Offset to start of sp2.data
-                stolen = 1;
+            #endif
+            if (!pc2 || pc2 == pc_start2 || !jl_atomic_cmpswap(&sp2.pc_start, &pc_start2, pc_start2 + 1))
+                continue;
+            sp.pc_start = pc_start2;
+            size_t stolen_stack_size = pc2 - pc_start2;
+            // `sp2.data - stack_size` because we are stealing from the bottom of the mark stack
+            // TODO: get proper size's from pc's
+            gc_mark_stack_push(&ptls->gc_cache, &sp, pc2, sp2.data - stolen_stack_size, sizeof(jl_gc_mark_data_t), 0);
+            #ifdef PARALLEL_GC_DEBUG
                 fprintf(stderr, "[%d] Stole from thread %d: %llx\n", ptls->tid, i, pc_start2);
-                goto pop_jmp;
-            }
+            #endif
+            gc_mark_jmp(*sp.pc); // computed goto
         }
-        return;
-        */
     }
-
-pop_jmp:
-    sp.pc--;
-    gc_mark_jmp(*sp.pc); // computed goto
+    return;
+}
 
 marked_obj: {
         // An object that has been marked and needs have metadata updated and scanned.
@@ -2232,7 +2210,6 @@ marked_obj: {
         new_obj = obj->obj;
         tag = obj->tag;
         bits = obj->bits;
-        data_size = sizeof(gc_mark_marked_obj_t);
         goto mark;
     }
 
@@ -2243,7 +2220,6 @@ scan_only: {
         tag = obj->tag;
         bits = obj->bits;
         meta_updated = 1;
-        data_size = sizeof(gc_mark_marked_obj_t);
         goto mark;
     }
 
@@ -2252,7 +2228,6 @@ objarray:
     objary_begin = objary->begin;
     objary_end = objary->end;
 objarray_loaded:
-    data_size = sizeof(gc_mark_objarray_t);
     if (gc_mark_scan_objarray(ptls, &sp, objary, objary_begin, objary_end,
                               &new_obj, &tag, &bits))
         goto mark;
@@ -2265,7 +2240,6 @@ array8:
     obj8_begin = ary8->elem.begin;
     obj8_end = ary8->elem.end;
 array8_loaded:
-    data_size = sizeof(gc_mark_array8_t);
     if (gc_mark_scan_array8(ptls, &sp, ary8, objary_begin, objary_end, obj8_begin, obj8_end,
                             &new_obj, &tag, &bits))
         goto mark;
@@ -2278,7 +2252,6 @@ array16:
     obj16_begin = ary16->elem.begin;
     obj16_end = ary16->elem.end;
 array16_loaded:
-    data_size = sizeof(gc_mark_array16_t);
     if (gc_mark_scan_array16(ptls, &sp, ary16, objary_begin, objary_end, obj16_begin, obj16_end,
                             &new_obj, &tag, &bits))
         goto mark;
@@ -2290,7 +2263,6 @@ obj8:
     obj8_begin = obj8->begin;
     obj8_end = obj8->end;
 obj8_loaded:
-    data_size = sizeof(gc_mark_obj8_t);
     if (gc_mark_scan_obj8(ptls, &sp, obj8, obj8_parent, obj8_begin, obj8_end,
                           &new_obj, &tag, &bits))
         goto mark;
@@ -2302,7 +2274,6 @@ obj16:
     obj16_begin = obj16->begin;
     obj16_end = obj16->end;
 obj16_loaded:
-    data_size = sizeof(gc_mark_obj16_t);
     if (gc_mark_scan_obj16(ptls, &sp, obj16, obj16_parent, obj16_begin, obj16_end,
                            &new_obj, &tag, &bits))
         goto mark;
@@ -2313,7 +2284,6 @@ obj32: {
         char *parent = (char*)obj32->parent;
         uint32_t *begin = obj32->begin;
         uint32_t *end = obj32->end;
-        data_size = sizeof(gc_mark_obj32_t);
         if (gc_mark_scan_obj32(ptls, &sp, obj32, parent, begin, end, &new_obj, &tag, &bits))
             goto mark;
         goto pop;
@@ -2324,7 +2294,6 @@ stack: {
         // The task object this stack belongs to is being scanned separately as a normal
         // 8bit field descriptor object.
         gc_mark_stackframe_t *stack = gc_pop_markdata(&sp, gc_mark_stackframe_t);
-        data_size = sizeof(gc_mark_stackframe_t);
         jl_gcframe_t *s = stack->s;
         uint32_t i = stack->i;
         uint32_t nroots = stack->nroots;
@@ -2383,7 +2352,6 @@ stack: {
 excstack: {
         // Scan an exception stack
         gc_mark_excstack_t *stackitr = gc_pop_markdata(&sp, gc_mark_excstack_t);
-        data_size = sizeof(gc_mark_excstack_t);
         jl_excstack_t *excstack = stackitr->s;
         size_t itr = stackitr->itr;
         size_t bt_index = stackitr->bt_index;
@@ -2433,7 +2401,6 @@ module_binding: {
         // Scan a module. see `gc_mark_binding_t`
         // Other fields of the module will be scanned after the bindings are scanned
         gc_mark_binding_t *binding = gc_pop_markdata(&sp, gc_mark_binding_t);
-        data_size = sizeof(gc_mark_binding_t);
         jl_binding_t **begin = binding->begin;
         jl_binding_t **end = binding->end;
         uint8_t mbits = binding->bits;
@@ -2515,7 +2482,6 @@ module_binding: {
 finlist: {
         // Scan a finalizer (or format compatible) list. see `gc_mark_finlist_t`
         gc_mark_finlist_t *finlist = gc_pop_markdata(&sp, gc_mark_finlist_t);
-        data_size = sizeof(gc_mark_finlist_t);
         jl_value_t **begin = finlist->begin;
         jl_value_t **end = finlist->end;
         for (; begin < end; begin++) {
@@ -2545,16 +2511,6 @@ finlist: {
 mark: {
         // Generic scanning entry point.
         // Expects `new_obj`, `tag` and `bits` to be set correctly.
-        if (stolen) {
-            if (!data_size) {
-                fprintf(stderr, "[%d] CRASH: data_size == 0, location %x\n", ptls->tid, sp.pc);
-                abort();
-            }
-            jl_gc_mark_data_t *data = sp.data;
-            sp.data = ptls->gc_cache.data_stack;
-            memcpy(sp.data, data, data_size);
-            stolen = 0;
-        }
 #ifdef JL_DEBUG_BUILD
         if (new_obj == gc_findval)
             jl_raise_debugger();
@@ -3125,23 +3081,13 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         jl_gc_premark(jl_all_tls_states[t_i]);
 
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
-
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
-
-        if (t_i != ptls->tid) {
-            // 2.1. mark every object in the `last_remsets` and `rem_binding`
-            jl_gc_queue_remset(gc_cache, &sp, ptls2);
-            // 2.2. mark every thread local root
-            jl_gc_queue_thread_local(gc_cache, &sp, ptls2);
-            // 2.3. mark any managed objects in the backtrace buffer
-            jl_gc_queue_bt_buf(gc_cache, &sp, ptls2);
-        }
-
-        // N.B. enqueued on associated thread
-        #ifdef PARALLEL_GC_DEBUG
-            fprintf(stderr, "[%d] State of %d: %d\n", ptls->tid, ptls2->tid, ptls2->gc_state);
-        #endif
-        // TODO: threads that are currently in GC safe regions?
+        // 2.1. mark every object in the `last_remsets` and `rem_binding`
+        jl_gc_queue_remset(gc_cache, &sp, ptls2);
+        // 2.2. mark every thread local root
+        jl_gc_queue_thread_local(gc_cache, &sp, ptls2);
+        // 2.3. mark any managed objects in the backtrace buffer
+        jl_gc_queue_bt_buf(gc_cache, &sp, ptls2);
     }
 
     jl_gc_queue_remset(gc_cache, &sp, ptls);
