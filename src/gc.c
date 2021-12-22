@@ -2194,14 +2194,17 @@ pop: {
             size_t stolen_stack_size = pc2 - pc_start2;
             // `sp2.data - stack_size` because we are stealing from the bottom of the mark stack
             // TODO: get proper size's from pc's
-            gc_mark_stack_push(&ptls->gc_cache, &sp, pc2, sp2.data - stolen_stack_size, sizeof(jl_gc_mark_data_t), 0);
+            gc_mark_stack_push(&ptls->gc_cache, &sp, pc_start2, sp2.data - stolen_stack_size, sizeof(jl_gc_mark_data_t), 0);
             #ifdef PARALLEL_GC_DEBUG
                 fprintf(stderr, "[%d] Stole from thread %d: %llx\n", ptls->tid, i, pc_start2);
             #endif
             gc_mark_jmp(*sp.pc); // computed goto
         }
+        // if no stealing happened, just exit the mark loop
+        return;
     }
-    return;
+    sp.pc--;
+    gc_mark_jmp(*sp.pc); // computed goto
 }
 
 marked_obj: {
@@ -3089,10 +3092,6 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         // 2.3. mark any managed objects in the backtrace buffer
         jl_gc_queue_bt_buf(gc_cache, &sp, ptls2);
     }
-
-    jl_gc_queue_remset(gc_cache, &sp, ptls);
-    jl_gc_queue_thread_local(gc_cache, &sp, ptls);
-    jl_gc_queue_bt_buf(gc_cache, &sp, ptls);
 
     // 3. walk roots
     mark_roots(gc_cache, &sp);
