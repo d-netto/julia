@@ -210,17 +210,6 @@ union _jl_gc_mark_data {
     gc_mark_finlist_t finlist;
 };
 
-// Pop a data struct from the mark data stack (i.e. decrease the stack pointer)
-// This should be used after dispatch and therefore the pc stack pointer is already popped from
-// the stack.
-STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_sp_t *sp, size_t size)
-{
-    jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)(((char*)sp->data) - size);
-    sp->data = data;
-    return data;
-}
-#define gc_pop_markdata(sp, type) ((type*)gc_pop_markdata_(sp, sizeof(type)))
-
 // Re-push a frame to the mark stack (both data and pc)
 // The data and pc are expected to be on the stack (or updated in place) already.
 // Mainly useful to pause the current scanning in order to scan an new object.

@@ -19,8 +19,6 @@
 
 #include "julia_assert.h"
 
-// #define PARALLEL_GC_SIG
-
 // private keymgr stuff
 #define KEYMGR_GCC3_DW2_OBJ_LIST 302
 enum {
@@ -55,35 +53,23 @@ void jl_mach_gc_end(void)
 // Otherwise return `0`
 static int jl_mach_gc_wait(jl_ptls_t ptls2,
                            mach_port_t thread, int16_t tid)
-{   
-    #ifndef PARALLEL_GC_SIG
-        jl_mutex_lock_nogc(&safepoint_lock);
-        if (!jl_atomic_load_relaxed(&jl_gc_running)) {
-            // relaxed, since gets set to zero only while the safepoint_lock was held
-            // this means we can tell if GC is done before we got the message or
-            // the safepoint was enabled for SIGINT.
-            jl_mutex_unlock_nogc(&safepoint_lock);
-            return 0;
-        }
-    #endif
+{
+    jl_mutex_lock_nogc(&safepoint_lock);
+    if (!jl_atomic_load_relaxed(&jl_gc_running)) {
+        // relaxed, since gets set to zero only while the safepoint_lock was held
+        // this means we can tell if GC is done before we got the message or
+        // the safepoint was enabled for SIGINT.
+        jl_mutex_unlock_nogc(&safepoint_lock);
+        return 0;
+    }
+    // Otherwise, set the gc state of the thread, suspend and record it
     int8_t gc_state = ptls2->gc_state;
     jl_atomic_store_release(&ptls2->gc_state, JL_GC_STATE_WAITING);
-    #ifdef PARALLEL_GC_SIG
-        while (jl_atomic_load_relaxed(&jl_gc_running) || jl_atomic_load_acquire(&jl_gc_running)) {
-            if (jl_gc_try_recruit(ptls2)) {
-                jl_atomic_store_release(&ptls2->gc_state, gc_state);
-                return 1;
-            }
-        }
-        jl_atomic_store_release(&ptls2->gc_state, gc_state);
-        return 0;
-    #else
-        uintptr_t item = tid | (((uintptr_t)gc_state) << 16);
-        arraylist_push(&suspended_threads, (void*)item);
-        thread_suspend(thread);
-        jl_mutex_unlock_nogc(&safepoint_lock);
-        return 1;
-    #endif
+    uintptr_t item = tid | (((uintptr_t)gc_state) << 16);
+    arraylist_push(&suspended_threads, (void*)item);
+    thread_suspend(thread);
+    jl_mutex_unlock_nogc(&safepoint_lock);
+    return 1;
 }
 
 static mach_port_t segv_port = 0;
@@ -538,7 +524,6 @@ static kern_return_t profiler_segv_handler
 void *mach_profile_listener(void *arg)
 {
     (void)arg;
-    int i;
     const int max_size = 512;
     attach_exception_port(mach_thread_self(), 1);
 #ifdef LLVMLIBUNWIND
@@ -555,7 +540,10 @@ void *mach_profile_listener(void *arg)
         jl_lock_profile();
         void *unused = NULL;
         int keymgr_locked = _keymgr_get_and_lock_processwide_ptr_2(KEYMGR_GCC3_DW2_OBJ_LIST, &unused) == 0;
-        for (i = jl_n_threads; i-- > 0; ) {
+        jl_shuffle_int_array_inplace(profile_round_robin_thread_order, jl_n_threads, &profile_cong_rng_seed);
+        for (int idx = jl_n_threads; idx-- > 0; ) {
+            // Stop the threads in the random round-robin order.
+            int i = profile_round_robin_thread_order[idx];
             // if there is no space left, break early
             if (jl_profile_is_buffer_full()) {
                 jl_profile_stop_timer();
@@ -600,8 +588,22 @@ void *mach_profile_listener(void *arg)
 #else
                 bt_size_cur += rec_backtrace_ctx((jl_bt_element_t*)bt_data_prof + bt_size_cur, bt_size_max - bt_size_cur - 1, uc, NULL);
 #endif
+                jl_ptls_t ptls = jl_all_tls_states[i];
 
-                // Mark the end of this block with 0
+                // store threadid but add 1 as 0 is preserved to indicate end of block
+                bt_data_prof[bt_size_cur++].uintptr = ptls->tid + 1;
+
+                // store task id
+                bt_data_prof[bt_size_cur++].uintptr = (uintptr_t)ptls->current_task;
+
+                // store cpu cycle clock
+                bt_data_prof[bt_size_cur++].uintptr = cycleclock();
+
+                // store whether thread is sleeping but add 1 as 0 is preserved to indicate end of block
+                bt_data_prof[bt_size_cur++].uintptr = ptls->sleep_check_state + 1;
+
+                // Mark the end of this block with two 0's
+                bt_data_prof[bt_size_cur++].uintptr = 0;
                 bt_data_prof[bt_size_cur++].uintptr = 0;
             }
             // We're done! Resume the thread.
