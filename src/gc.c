@@ -1693,9 +1693,35 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
     *sp->pc = pc;
     memcpy(sp->data, data, data_size);
     if (inc) {
-        sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + data_size);
+        // sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + data_size);
+        sp->data++;
         sp->pc++;
     }
+}
+
+// Helper functions for the lock-free work-stealing deque from Arora et. al [1].
+//
+// [1] Nimar S. Arora; Robert D. Blumofe; and C. Greg Plaxton.
+// Thread scheduling for multiprogrammed multiprocessors.
+// Proceedings of the Tenth Annual ACM Symposium on Paralle Algorithms
+// and Architectures, 1998.
+
+STATIC_INLINE int gc_ws_assign_victim(int self)
+{
+    // TODO: this will eventually need some randomization.
+    // Currently assigning victims naively for testing/debugging
+    // purposes only.
+    for (int i = 0; i < jl_n_threads; i++) {
+        if (i != self) {
+            jl_ptls_t ptls2 = jl_all_tls_states[i];
+            jl_gc_mark_sp_t sp2 = ptls2->gc_mark_sp;
+            // also needs to be fixed with the randomized assignment above
+            if (sp2.pc > sp2.pc_start) {
+                return i;
+            }
+        }
+    }
+    return -1;
 }
 
 // Check if the reference is non-NULL and atomically set the mark bit.
@@ -2157,6 +2183,9 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
         return;
     }
 
+    int self = jl_current_task->tid;
+    jl_gc_ws_offset_t ws_offset;
+
     jl_value_t *new_obj = NULL;
     uintptr_t tag = 0;
     uint8_t bits = 0;
@@ -2179,13 +2208,56 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     uint16_t *obj16_begin;
     uint16_t *obj16_end;
 
-pop:
-    if (sp.pc == sp.pc_start) {
-        // TODO: stealing form another thread
-        return;
+pop : {
+    ws_offset = jl_atomic_load_acquire(&sp.ws_offset);
+    if (sp.pc == sp.pc_start + ws_offset.base_offset) {
+        int victim = gc_ws_assign_victim(self);
+        if (victim != -1) {
+            jl_ptls_t ptls2 = jl_all_tls_states[victim];
+            jl_gc_mark_sp_t sp2 = ptls2->gc_mark_sp;
+            jl_gc_ws_offset_t ws_offset2 = jl_atomic_load_acquire(&sp2.ws_offset);
+            if (sp2.pc > sp2.pc_start + ws_offset2.base_offset) {
+                jl_gc_ws_offset_t ws_offset_stolen = ws_offset2;
+                ws_offset_stolen.base_offset++;
+                jl_atomic_cmpswap(&sp.ws_offset, &ws_offset2, ws_offset_stolen);
+                if (ws_offset2.ws_tag == ws_offset_stolen.ws_tag &&
+                    ws_offset2.base_offset == ws_offset_stolen.base_offset) {
+                    JL_LOCK_NOGC(&ptls2->gc_cache.stack_lock);
+                    size_t base_offset = ws_offset2.base_offset;
+                    // TODO: get size information based on stolen_pc
+                    size_t data_size = sizeof(union _jl_gc_mark_data);
+                    void **stolen_pc = sp2.pc + base_offset;
+                    void *stolen_data = sp2.data + base_offset;
+                    gc_mark_stack_push(&ptls->gc_cache, &sp, stolen_pc, stolen_data,
+                                       data_size, 0);
+                    JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
+                }
+            }
+            export_gc_state(ptls, &sp);
+            gc_mark_jmp(*sp.pc);
+        }
     }
-    sp.pc--;
-    gc_mark_jmp(*sp.pc); // computed goto
+    else if (sp.pc) {
+        void **pc2 = sp.pc--;
+        jl_gc_ws_offset_t old_ws_offset = jl_atomic_load_acquire(&sp.ws_offset);
+        if (pc2 > sp.pc_start) {
+            export_gc_state(ptls, &sp);
+            gc_mark_jmp(*sp.pc);
+        }
+        sp.pc = NULL;
+        jl_gc_ws_offset_t new_ws_offset = {old_ws_offset.ws_tag + 1, 0};
+        if (pc2 == old_ws_offset.base_offset) {
+            jl_atomic_cmpswap(&sp.ws_offset, &old_ws_offset, new_ws_offset);
+            if (old_ws_offset.ws_tag == new_ws_offset.ws_tag &&
+                old_ws_offset.base_offset == new_ws_offset.base_offset) {
+                export_gc_state(ptls, &sp);
+                gc_mark_jmp(*sp.pc);
+            }
+        }
+        jl_atomic_store_release(&sp.ws_offset, new_ws_offset);
+    }
+    return;
+}
 
 marked_obj: {
         // An object that has been marked and needs have metadata updated and scanned.
@@ -3006,6 +3078,38 @@ static void jl_gc_queue_bt_buf(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp
 
 size_t jl_maxrss(void);
 
+void jl_gc_set_recruit(jl_ptls_t ptls, void *addr)
+{
+    jl_fence();
+    jl_atomic_store_relaxed(&jl_gc_recruiting_location, addr);
+    if (jl_n_threads > 1)
+        jl_wake_libuv();
+    for (int i = 0; i < jl_n_threads; i++) {
+        if (i == ptls->tid)
+            continue;
+        jl_wakeup_thread(i);
+    }
+}
+void jl_gc_clear_recruit(jl_ptls_t ptls)
+{
+    jl_atomic_store_relaxed(&jl_gc_recruiting_location, NULL);
+    for (int i = 0; i < jl_n_threads; i++) {
+        if (i == ptls->tid)
+            continue;
+        jl_ptls_t ptls2 = jl_all_tls_states[i];
+        while (jl_atomic_load_relaxed(&ptls2->gc_state) == JL_GC_STATE_PARALLEL &&
+               jl_atomic_load_acquire(&ptls2->gc_state) == JL_GC_STATE_PARALLEL)
+            jl_cpu_pause();
+    }
+}
+
+static void gc_mark_loop_recruited(jl_ptls_t ptls)
+{
+    jl_gc_mark_sp_t sp;
+    import_gc_state(ptls, &sp);
+    gc_mark_loop(ptls, sp);
+}
+
 // Only one thread should be running in this function
 static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 {
@@ -3069,9 +3173,13 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         gc_mark_queue_finlist(gc_cache, &sp, &ptls2->finalizers, 0);
     }
     gc_mark_queue_finlist(gc_cache, &sp, &finalizer_list_marked, orig_marked_len);
+    jl_gc_set_recruit(ptls, (void *)gc_mark_loop_recruited);
+    uint8_t old_state = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
     // "Flush" the mark stack before flipping the reset_age bit
     // so that the objects are not incorrectly reset.
     gc_mark_loop(ptls, sp);
+    jl_gc_state_set(ptls, old_state, JL_GC_STATE_PARALLEL);
+    jl_gc_clear_recruit(ptls);
     gc_mark_sp_init(gc_cache, &sp);
     // Conservative marking relies on age to tell allocated objects
     // and freelist entries apart.

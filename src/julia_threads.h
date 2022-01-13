@@ -173,10 +173,16 @@ typedef struct {
 typedef union _jl_gc_mark_data jl_gc_mark_data_t;
 
 typedef struct {
+    size_t base_offset;
+    uint32_t ws_tag;
+} jl_gc_ws_offset_t;
+
+typedef struct {
     void **pc; // Current stack address for the pc (up growing)
     jl_gc_mark_data_t *data; // Current stack address for the data (up growing)
     void **pc_start; // Cached value of `gc_cache->pc_stack`
     void **pc_end; // Cached value of `gc_cache->pc_stack_end`
+    _Atomic(jl_gc_ws_offset_t) ws_offset;
 } jl_gc_mark_sp_t;
 
 typedef struct {
@@ -195,6 +201,7 @@ typedef struct {
     // this makes sure that a single objects can only appear once in
     // the lists (the mark bit cannot be flipped to `0` without sweeping)
     void *big_obj[1024];
+    jl_mutex_t stack_lock;
     void **pc_stack;
     void **pc_stack_end;
     jl_gc_mark_data_t *data_stack;
@@ -216,6 +223,9 @@ typedef struct _jl_tls_states_t {
 #define JL_GC_STATE_SAFE 2
     // gc_state = 2 means the thread is running unmanaged code that can be
     //              execute at the same time with the GC.
+#define JL_GC_STATE_PARALLEL 3
+    // gc_state = 3 means the thread is doing GC work that can be executed
+    //              concurrently on multiple threads.
     _Atomic(int8_t) gc_state; // read from foreign threads
     // execution of certain certain impure
     // statements is prohibited from certain
@@ -355,6 +365,22 @@ int8_t jl_gc_safe_leave(jl_ptls_t ptls, int8_t state); // Can be a safepoint
 #define jl_gc_safe_leave(ptls, state) ((void)jl_gc_state_set(ptls, (state), JL_GC_STATE_SAFE))
 #endif
 JL_DLLEXPORT void (jl_gc_safepoint)(void);
+// Either NULL, or the address of a function that threads can call while
+// waiting for the GC, which will recruit them into a concurrent GC operation.
+extern _Atomic(void *) jl_gc_recruiting_location;
+STATIC_INLINE void jl_gc_try_recruit(jl_ptls_t ptls)
+{
+    // Try to get recruited for parallel GC work
+    if (jl_atomic_load_relaxed(&jl_gc_recruiting_location)) {
+        uint8_t old_state = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
+        void *location = jl_atomic_load_acquire(&jl_gc_recruiting_location);
+        if (location) {
+            // Success! Go do something useful...
+            ((void (*)(jl_ptls_t))location)(ptls);
+        }
+        jl_gc_state_set(ptls, old_state, JL_GC_STATE_PARALLEL);
+    }
+}
 
 JL_DLLEXPORT void jl_gc_enable_finalizers(struct _jl_task_t *ct, int on);
 JL_DLLEXPORT void jl_gc_disable_finalizers_internal(void);
