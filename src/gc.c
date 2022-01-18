@@ -2220,14 +2220,15 @@ pop: {
                 JL_LOCK_NOGC(&ptls2->gc_cache.stack_lock);
                 void **ws_pc_start2 = sp2.pc_start + ws_offset2.pc_ws_offset;
                 if (sp2.pc > ws_pc_start2) {
+                    void **maybe_stolen_pc = sp2.pc_start + ws_offset2.pc_ws_offset;
+                    void *maybe_stolen_data = (void *)((char *)sp2.data_start + ws_offset2.data_ws_offset);
+                    // TODO: infer data_size from maybe_stolen_data
                     size_t data_size = sizeof(union _jl_gc_mark_data);
                     jl_gc_ws_offset_t ws_offset_on_success = {ws_offset2.data_ws_offset + data_size,
                                                               ws_offset2.pc_ws_offset + 1, 
                                                               ws_offset2.ws_tag};
                     if (jl_atomic_cmpswap(&sp2.ws_offset, &ws_offset2, ws_offset_on_success)) {
-                        void **stolen_pc = sp2.pc_start + ws_offset2.pc_ws_offset;
-                        void *stolen_data = (void *)((char *)sp2.data_start + ws_offset2.data_ws_offset);
-                        gc_mark_stack_push(&ptls->gc_cache, &sp, stolen_pc, stolen_data,
+                        gc_mark_stack_push(&ptls->gc_cache, &sp, maybe_stolen_pc, maybe_stolen_data,
                                            data_size, 0);
                         JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
                         gc_mark_jmp(*sp.pc);
