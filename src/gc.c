@@ -1693,8 +1693,7 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
     *sp->pc = pc;
     memcpy(sp->data, data, data_size);
     if (inc) {
-        // sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + data_size);
-        sp->data++;
+        sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + data_size);
         sp->pc++;
     }
 }
@@ -2214,49 +2213,46 @@ pop: {
         ws_offset = jl_atomic_load_acquire(&sp.ws_offset);
         ws_pc_start = sp.pc_start + ws_offset.pc_ws_offset;
         if (sp.pc == ws_pc_start) {
-            // while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
-            //     jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
-            //     jl_gc_mark_sp_t sp2 = ptls2->gc_mark_sp;
-            //     jl_gc_ws_offset_t ws_offset2 = jl_atomic_load_acquire(&sp2.ws_offset);
-            //     JL_LOCK_NOGC(&ptls2->gc_cache.stack_lock);
-            //     void **ws_pc_start2 = sp2.pc_start + ws_offset2.pc_ws_offset;
-            //     if (sp2.pc > ws_pc_start2) {
-            //         size_t data_size = sizeof(union _jl_gc_mark_data);
-            //         jl_gc_ws_offset_t ws_offset_on_success = {ws_offset2.data_ws_offset + data_size,
-            //                                                   ws_offset2.pc_ws_offset + 1, 
-            //                                                   ws_offset2.ws_tag};
-            //         if (jl_atomic_cmpswap(&sp2.ws_offset, &ws_offset2, ws_offset_on_success)) {
-            //             void **stolen_pc = sp2.pc_start + ws_offset2.pc_ws_offset;
-            //             void *stolen_data = (void *)((char *)sp2.data_start + ws_offset2.data_ws_offset);
-            //             gc_mark_stack_push(&ptls->gc_cache, &sp, stolen_pc, stolen_data,
-            //                                data_size, 0);
-            //             JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
-            //             gc_mark_jmp(*sp.pc);
-            //         }
-            //     }
-            //     JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
-            // }
+            while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
+                jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
+                jl_gc_mark_sp_t sp2 = ptls2->gc_mark_sp;
+                jl_gc_ws_offset_t ws_offset2 = jl_atomic_load_acquire(&sp2.ws_offset);
+                JL_LOCK_NOGC(&ptls2->gc_cache.stack_lock);
+                void **ws_pc_start2 = sp2.pc_start + ws_offset2.pc_ws_offset;
+                if (sp2.pc > ws_pc_start2) {
+                    size_t data_size = sizeof(union _jl_gc_mark_data);
+                    jl_gc_ws_offset_t ws_offset_on_success = {ws_offset2.data_ws_offset + data_size,
+                                                              ws_offset2.pc_ws_offset + 1, 
+                                                              ws_offset2.ws_tag};
+                    if (jl_atomic_cmpswap(&sp2.ws_offset, &ws_offset2, ws_offset_on_success)) {
+                        void **stolen_pc = sp2.pc_start + ws_offset2.pc_ws_offset;
+                        void *stolen_data = (void *)((char *)sp2.data_start + ws_offset2.data_ws_offset);
+                        gc_mark_stack_push(&ptls->gc_cache, &sp, stolen_pc, stolen_data,
+                                           data_size, 0);
+                        JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
+                        gc_mark_jmp(*sp.pc);
+                    }
+                }
+                JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
+            }
             return;
+        } else if (sp.pc) {
+            void **pc2 = --sp.pc;
+            jl_gc_ws_offset_t old_ws_offset = jl_atomic_load_acquire(&sp.ws_offset);
+            ws_pc_start = sp.pc_start + old_ws_offset.pc_ws_offset;
+            if (pc2 >= ws_pc_start) {
+                gc_mark_jmp(*sp.pc);
+            }
+            sp.pc = NULL;
+            jl_gc_ws_offset_t new_ws_offset = {0, 0, old_ws_offset.ws_tag + 1};
+            if (pc2 == ws_pc_start) {
+                if (jl_atomic_cmpswap(&sp.ws_offset, &old_ws_offset, new_ws_offset)) {
+                    gc_mark_jmp(*sp.pc);
+                }
+            }
+            jl_atomic_store_release(&sp.ws_offset, new_ws_offset);
         }
-        // else if (sp.pc) {
-        //     void **pc2 = --sp.pc;
-        //     jl_gc_ws_offset_t old_ws_offset = jl_atomic_load_acquire(&sp.ws_offset);
-        //     ws_pc_start = sp.pc_start + old_ws_offset.pc_ws_offset;
-        //     if (pc2 > ws_pc_start) {
-        //         gc_mark_jmp(*sp.pc);
-        //     }
-        //     sp.pc = NULL;
-        //     jl_gc_ws_offset_t new_ws_offset = {0, 0, old_ws_offset.ws_tag + 1};
-        //     if (pc2 == ws_pc_start) {
-        //         if (jl_atomic_cmpswap(&sp.ws_offset, &old_ws_offset, new_ws_offset)) {
-        //             gc_mark_jmp(*sp.pc);
-        //         }
-        //     }
-        //     jl_atomic_store_release(&sp.ws_offset, new_ws_offset);
-        // }
-        // return;
-        sp.pc--;
-        gc_mark_jmp(*sp.pc);
+        return;
     }
 
 marked_obj: {
