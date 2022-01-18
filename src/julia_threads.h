@@ -173,15 +173,17 @@ typedef struct {
 typedef union _jl_gc_mark_data jl_gc_mark_data_t;
 
 typedef struct {
-    size_t base_offset;
+    size_t data_ws_offset;
+    uint32_t pc_ws_offset;
     uint32_t ws_tag;
 } jl_gc_ws_offset_t;
 
 typedef struct {
-    void **pc; // Current stack address for the pc (up growing)
+    jl_gc_mark_data_t *data_start;
     jl_gc_mark_data_t *data; // Current stack address for the data (up growing)
     void **pc_start; // Cached value of `gc_cache->pc_stack`
     void **pc_end; // Cached value of `gc_cache->pc_stack_end`
+    void **pc; // Current stack address for the pc (up growing)
     _Atomic(jl_gc_ws_offset_t) ws_offset;
 } jl_gc_mark_sp_t;
 
