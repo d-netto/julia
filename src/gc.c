@@ -2213,7 +2213,7 @@ pop: {
         ws_offset = jl_atomic_load_acquire(&sp.ws_offset);
         ws_pc_start = sp.pc_start + ws_offset.pc_ws_offset;
 	if (sp.pc == ws_pc_start) {
-	    fprintf(stderr, "foobar %d\n", ws_victim);;
+	    fprintf(stderr, "foobar %d\n", ws_victim);
             while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
                 fprintf(stderr, "Trying to steal\n");
 		jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
