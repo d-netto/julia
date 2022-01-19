@@ -1715,7 +1715,7 @@ STATIC_INLINE int gc_ws_assign_victim(int self)
             jl_ptls_t ptls2 = jl_all_tls_states[i];
             jl_gc_mark_sp_t sp2 = ptls2->gc_mark_sp;
             // also needs to be fixed with the randomized assignment above
-            if (sp2.pc > sp2.pc_start) {
+	    if (sp2.pc > sp2.pc_start) {
                 return i;
             }
         }
@@ -2183,7 +2183,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     }
 
     int self = ptls->tid;
-    int ws_victim;
+    int ws_victim = self;
     void **ws_pc_start;
     jl_gc_ws_offset_t ws_offset;
 
@@ -2212,9 +2212,11 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
 pop: {
         ws_offset = jl_atomic_load_acquire(&sp.ws_offset);
         ws_pc_start = sp.pc_start + ws_offset.pc_ws_offset;
-        if (sp.pc == ws_pc_start) {
+	if (sp.pc == ws_pc_start) {
+	    fprintf(stderr, "foobar %d\n", ws_victim);;
             while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
-                jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
+                fprintf(stderr, "Trying to steal\n");
+		jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
                 jl_gc_mark_sp_t sp2 = ptls2->gc_mark_sp;
                 jl_gc_ws_offset_t ws_offset2 = jl_atomic_load_acquire(&sp2.ws_offset);
                 JL_LOCK_NOGC(&ptls2->gc_cache.stack_lock);
@@ -2246,10 +2248,8 @@ pop: {
             }
             sp.pc = NULL;
             jl_gc_ws_offset_t new_ws_offset = {0, 0, old_ws_offset.ws_tag + 1};
-            if (pc2 == ws_pc_start) {
-                if (jl_atomic_cmpswap(&sp.ws_offset, &old_ws_offset, new_ws_offset)) {
-                    gc_mark_jmp(*sp.pc);
-                }
+            if (pc2 == ws_pc_start && jl_atomic_cmpswap(&sp.ws_offset, &old_ws_offset, new_ws_offset)) {
+      	        gc_mark_jmp(*sp.pc);
             }
             jl_atomic_store_release(&sp.ws_offset, new_ws_offset);
         }
