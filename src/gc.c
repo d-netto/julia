@@ -2213,9 +2213,7 @@ pop: {
         ws_offset = jl_atomic_load_acquire(&sp.ws_offset);
         ws_pc_start = sp.pc_start + ws_offset.pc_ws_offset;
 	if (sp.pc == ws_pc_start) {
-	    fprintf(stderr, "foobar %d\n", ws_victim);
             while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
-                fprintf(stderr, "Trying to steal\n");
 		jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
                 jl_gc_mark_sp_t sp2 = ptls2->gc_mark_sp;
                 jl_gc_ws_offset_t ws_offset2 = jl_atomic_load_acquire(&sp2.ws_offset);
@@ -2224,13 +2222,13 @@ pop: {
                 if (sp2.pc > ws_pc_start2) {
                     void **maybe_stolen_pc = sp2.pc_start + ws_offset2.pc_ws_offset;
                     void *maybe_stolen_data = (void *)((char *)sp2.data_start + ws_offset2.data_ws_offset);
-                    // TODO: infer data_size from maybe_stolen_data
+                    // TODO: infer data_size from maybe_stolen_pc
                     size_t data_size = sizeof(union _jl_gc_mark_data);
                     jl_gc_ws_offset_t ws_offset_on_success = {ws_offset2.data_ws_offset + data_size,
                                                               ws_offset2.pc_ws_offset + 1, 
                                                               ws_offset2.ws_tag};
                     if (jl_atomic_cmpswap(&sp2.ws_offset, &ws_offset2, ws_offset_on_success)) {
-                        gc_mark_stack_push(&ptls->gc_cache, &sp, maybe_stolen_pc, maybe_stolen_data,
+			gc_mark_stack_push(&ptls->gc_cache, &sp, maybe_stolen_pc, maybe_stolen_data,
                                            data_size, 0);
                         JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
                         gc_mark_jmp(*sp.pc);
@@ -3173,13 +3171,9 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         gc_mark_queue_finlist(gc_cache, &sp, &ptls2->finalizers, 0);
     }
     gc_mark_queue_finlist(gc_cache, &sp, &finalizer_list_marked, orig_marked_len);
-    jl_gc_set_recruit(ptls, (void *)gc_mark_loop_recruited);
-    uint8_t old_state = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
     // "Flush" the mark stack before flipping the reset_age bit
     // so that the objects are not incorrectly reset.
     gc_mark_loop(ptls, sp);
-    jl_gc_state_set(ptls, old_state, JL_GC_STATE_PARALLEL);
-    jl_gc_clear_recruit(ptls);
     gc_mark_sp_init(gc_cache, &sp);
     // Conservative marking relies on age to tell allocated objects
     // and freelist entries apart.
