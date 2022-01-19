@@ -3138,6 +3138,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     if (gc_cblist_root_scanner) {
         gc_invoke_callbacks(jl_gc_cb_root_scanner_t,
             gc_cblist_root_scanner, (collection));
+	import_gc_state(ptls, &sp);
     }
     jl_gc_set_recruit(ptls, (void *)gc_mark_loop_recruited);
     uint8_t old_state = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
