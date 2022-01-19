@@ -3136,13 +3136,16 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 
     // 3. walk roots
     mark_roots(gc_cache, &sp);
+    export_gc_state(ptls, &sp);
     if (gc_cblist_root_scanner) {
-        export_gc_state(ptls, &sp);
         gc_invoke_callbacks(jl_gc_cb_root_scanner_t,
             gc_cblist_root_scanner, (collection));
-        import_gc_state(ptls, &sp);
     }
+    jl_gc_set_recruit(ptls, (void *)gc_mark_loop_recruited);
+    uint8_t old_state = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
     gc_mark_loop(ptls, sp);
+    jl_gc_state_set(ptls, old_state, JL_GC_STATE_PARALLEL);
+    jl_gc_clear_recruit(ptls);
     gc_mark_sp_init(gc_cache, &sp);
     gc_num.since_sweep += gc_num.allocd;
     JL_PROBE_GC_MARK_END(scanned_bytes, perm_scanned_bytes);
@@ -3177,6 +3180,23 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     gc_mark_loop(ptls, sp);
     jl_gc_state_set(ptls, old_state, JL_GC_STATE_PARALLEL);
     jl_gc_clear_recruit(ptls);
+    gc_mark_sp_init(gc_cache, &sp);
+    // Conservative marking relies on age to tell allocated objects
+    // and freelist entries apart.
+    mark_reset_age = !jl_gc_conservative_gc_support_enabled();
+    // Reset the age and old bit for any unmarked objects referenced by the
+    // `to_finalize` list. These objects are only reachable from this list
+    // and should not be referenced by any old objects so this won't break
+    // the GC invariant.
+    gc_mark_queue_finlist(gc_cache, &sp, &to_finalize, 0);
+    gc_mark_loop(ptls, sp);
+    mark_reset_age = 0;
+    gc_settime_postmark_end();
+
+     gc_mark_queue_finlist(gc_cache, &sp, &finalizer_list_marked, orig_marked_len);
+    // "Flush" the mark stack before flipping the reset_age bit
+    // so that the objects are not incorrectly reset.
+    gc_mark_loop(ptls, sp);
     gc_mark_sp_init(gc_cache, &sp);
     // Conservative marking relies on age to tell allocated objects
     // and freelist entries apart.
