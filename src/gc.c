@@ -1669,7 +1669,7 @@ static void NOINLINE gc_mark_stack_resize(jl_gc_mark_cache_t *gc_cache, jl_gc_ma
 {
     jl_gc_mark_data_t *old_data = gc_cache->data_stack;
     void **pc_stack = sp->pc_start;
-    size_t stack_size = (char*)sp->pc_end - (char*)pc_stack;
+    size_t stack_size = sp->pc_end - pc_stack;
     sp->data_start = gc_cache->data_stack = (jl_gc_mark_data_t *)realloc_s(old_data, stack_size * 2 * sizeof(jl_gc_mark_data_t));
     sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + (((char*)gc_cache->data_stack) - ((char*)old_data)));
 
@@ -2183,9 +2183,8 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     }
 
     int self = ptls->tid;
-    int ws_victim = self;
-    void **ws_pc_start;
-    jl_gc_ws_offset_t ws_offset;
+    int ws_victim;
+    jl_gc_pc_start_t ws_start;
 
     jl_value_t *new_obj = NULL;
     uintptr_t tag = 0;
@@ -2209,43 +2208,37 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     uint16_t *obj16_begin;
     uint16_t *obj16_end;
 
-pop: {
-        ws_offset = jl_atomic_load_acquire(&sp.ws_offset);
-        ws_pc_start = sp.pc_start + ws_offset.pc_ws_offset;
-	if (sp.pc == ws_pc_start) {
-            while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
-		jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
-                jl_gc_mark_sp_t sp2 = ptls2->gc_mark_sp;
-                jl_gc_ws_offset_t ws_offset2 = jl_atomic_load_acquire(&sp2.ws_offset);
-                JL_LOCK_NOGC(&ptls2->gc_cache.stack_lock);
-                void **ws_pc_start2 = sp2.pc_start + ws_offset2.pc_ws_offset;
-                if (sp2.pc > ws_pc_start2) {
-                    void **maybe_stolen_pc = sp2.pc_start + ws_offset2.pc_ws_offset;
-                    void *maybe_stolen_data = (void *)((char *)sp2.data_start + ws_offset2.data_ws_offset);
-                    // TODO: infer data_size from maybe_stolen_pc
-                    size_t data_size = sizeof(union _jl_gc_mark_data);
-                    jl_gc_ws_offset_t ws_offset_on_success = {ws_offset2.data_ws_offset + data_size,
-                                                              ws_offset2.pc_ws_offset + 1, 
-                                                              ws_offset2.ws_tag};
-                    if (jl_atomic_cmpswap(&sp2.ws_offset, &ws_offset2, ws_offset_on_success)) {
-			gc_mark_stack_push(&ptls->gc_cache, &sp, maybe_stolen_pc, maybe_stolen_data,
-                                           data_size, 0);
-                        JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
-                        gc_mark_jmp(*sp.pc);
+pop: {  
+        ws_start = jl_atomic_load_acquire(&ptls->gc_cache.ws_start);
+        if (sp.pc) {
+            if (sp.pc == ws_start.pc_start) {
+                while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
+                    jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
+                    jl_gc_mark_cache_t *gc_cache2 = &ptls2->gc_cache;
+                    jl_gc_ws_start_t ws_start2 = jl_atomic_load_acquire(&gc_cache2->ws_start);
+
+                    JL_LOCK_NOGC(&gc_cache2.stack_lock);
+                    if (sp2.pc > ws_start2.pc_start) {
+                        size_t data_size = sizeof(union _jl_gc_mark_data);
+                        jl_gc_ws_start_t ws_start_on_success = {ws_offset2.pc_start + 1, 
+                                                                ws_offset2.ws_tag};
+                                                                
+                        if (jl_atomic_cmpswap(&gc_cache2->ws_start, &ws_start2, ws_start_on_success)) {
+            	            gc_mark_stack_push(&ptls->gc_cache, &sp, ws_start2.pc_start, gc_cache2.data_stack_start,
+                                               data_size, 0);
+                            JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
+                            gc_mark_jmp(*sp.pc);
+                        }
                     }
+                    JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
                 }
-                JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
             }
-            return;
-        } else if (sp.pc) {
             void **pc2 = --sp.pc;
-            jl_gc_ws_offset_t old_ws_offset = jl_atomic_load_acquire(&sp.ws_offset);
-            ws_pc_start = sp.pc_start + old_ws_offset.pc_ws_offset;
-            if (pc2 >= ws_pc_start) {
+            if (pc2 >= ws_start.pc_start) {
                 gc_mark_jmp(*sp.pc);
             }
             sp.pc = NULL;
-            jl_gc_ws_offset_t new_ws_offset = {0, 0, old_ws_offset.ws_tag + 1};
+            jl_gc_ws_offset_t new_ws_start = {NULL, ws_start.ws_tag + 1};
             if (pc2 == ws_pc_start && jl_atomic_cmpswap(&sp.ws_offset, &old_ws_offset, new_ws_offset)) {
       	        gc_mark_jmp(*sp.pc);
             }
@@ -3138,6 +3131,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     if (gc_cblist_root_scanner) {
         gc_invoke_callbacks(jl_gc_cb_root_scanner_t,
             gc_cblist_root_scanner, (collection));
+        import_gc_state(ptls, &sp);
     }
     jl_gc_set_recruit(ptls, (void *)gc_mark_loop_recruited);
     uint8_t old_state = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
