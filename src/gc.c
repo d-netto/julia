@@ -1673,11 +1673,14 @@ static void NOINLINE gc_mark_stack_resize(jl_gc_mark_cache_t *gc_cache, jl_gc_ma
     jl_gc_mark_data_t *old_data = gc_cache->data_stack;
     void **pc_stack = sp->pc_start;
     size_t stack_size = sp->pc_end - pc_stack;
+
+    JL_LOCK_NOGC(&gc_cache->stack_lock);
     gc_cache->data_stack = (jl_gc_mark_data_t *)realloc_s(old_data, stack_size * 2 * sizeof(jl_gc_mark_data_t));
     sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + (((char*)gc_cache->data_stack) - ((char*)old_data)));
-
-    sp->pc_start = gc_cache->pc_stack = (void**)realloc_s(pc_stack, stack_size * 2 * sizeof(void*));
+    sp->pc_start = gc_cache->pc_stack = (void**)realloc_s(pc_stack, stack_size * 2 * sizeof(void*));   
     gc_cache->pc_stack_end = sp->pc_end = sp->pc_start + stack_size * 2;
+    JL_UNLOCK_NOGC(&gc_cache->stack_lock);
+
     sp->pc = sp->pc_start + (sp->pc - pc_stack);
 }
 
@@ -2220,34 +2223,38 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
 pop: {
         if (sp.pc != sp.pc_start) {
             sp.pc--;
+	    fprintf(stderr, "%d is popping; jummping to %p\n", self, *sp.pc);
             gc_mark_jmp(*sp.pc);
         }
         // Nothing left in thread's pc-stack, may steal from another thread
         while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
             jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
             jl_gc_mark_cache_t *gc_cache2 = &ptls2->gc_cache;
-            jl_gc_mark_sp_t *sp2 = &ptls2->gc_mark_sp;
             // Victim's stack-lock needs to be held to prevent a resize/reallocation
             // of its mark-stack.
             JL_LOCK_NOGC(&gc_cache2->stack_lock);
             void **pc_start2 = gc_cache2->pc_stack;
+	    void **pc2 = ptls2->gc_mark_sp.pc;
             // We require at least GC_WS_GRAINSIZE objects to steal
             // to make up for the cost of acquiring the stack-lock
-            if (sp2->pc >= pc_start2 + GC_WS_GRAINSIZE) {
-                char *stolen_data = (char *)gc_cache2->data_stack;
-                for (void **stolen_pc = pc_start2; 
-                    stolen_pc < pc_start2 + GC_WS_GRAINSIZE; stolen_pc++) {
+            if (pc2 >= pc_start2 + GC_WS_GRAINSIZE) {
+               	fprintf(stderr, "%d is stealing from %d!\n", self, ws_victim);
+		char *ws_data = (char *)gc_cache2->data_stack;
+                for (void **ws_pc = pc_start2; 
+                    ws_pc < pc_start2 + GC_WS_GRAINSIZE; ws_pc++) {
                     // TODO: change this to support GNU's `labels as values`
-                    size_t data_size = gc_mark_label_sizes[(int)(uintptr_t)(*stolen_pc)];
-                    gc_mark_stack_push(&ptls->gc_cache, &sp, *stolen_pc, 
-                                        stolen_data, data_size, 1);
-                    stolen_data += data_size;
+                    size_t ws_data_size = gc_mark_label_sizes[(int)(uintptr_t)(*ws_pc)];
+                    gc_mark_stack_push(gc_cache, &sp, *ws_pc, 
+                                       ws_data, ws_data_size, 1);
+                    ws_data += ws_data_size;
                 }
-                gc_cache2->pc_stack += GC_WS_GRAINSIZE;
-                gc_cache2->data_stack = (jl_gc_mark_data_t *)stolen_data;
+		fprintf(stderr, "%d pushed all elts when stealing from %d\n", self, ws_victim);
+                // TODO: update sp.pc_start and gc_cache->pc_stack?
+		gc_cache2->pc_stack += GC_WS_GRAINSIZE;
+                gc_cache2->data_stack = (jl_gc_mark_data_t *)ws_data;
                 export_gc_state(ptls, &sp);
                 JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
-                gc_mark_jmp(*sp.pc);
+                goto pop;
             }
             JL_UNLOCK_NOGC(&gc_cache2->stack_lock);
         }
@@ -3177,23 +3184,6 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         gc_mark_queue_finlist(gc_cache, &sp, &ptls2->finalizers, 0);
     }
     gc_mark_queue_finlist(gc_cache, &sp, &finalizer_list_marked, orig_marked_len);
-    // "Flush" the mark stack before flipping the reset_age bit
-    // so that the objects are not incorrectly reset.
-    gc_mark_loop(ptls, sp);
-    gc_mark_sp_init(gc_cache, &sp);
-    // Conservative marking relies on age to tell allocated objects
-    // and freelist entries apart.
-    mark_reset_age = !jl_gc_conservative_gc_support_enabled();
-    // Reset the age and old bit for any unmarked objects referenced by the
-    // `to_finalize` list. These objects are only reachable from this list
-    // and should not be referenced by any old objects so this won't break
-    // the GC invariant.
-    gc_mark_queue_finlist(gc_cache, &sp, &to_finalize, 0);
-    gc_mark_loop(ptls, sp);
-    mark_reset_age = 0;
-    gc_settime_postmark_end();
-
-     gc_mark_queue_finlist(gc_cache, &sp, &finalizer_list_marked, orig_marked_len);
     // "Flush" the mark stack before flipping the reset_age bit
     // so that the objects are not incorrectly reset.
     gc_mark_loop(ptls, sp);
