@@ -1664,13 +1664,16 @@ JL_NORETURN NOINLINE void gc_assert_datatype_fail(jl_ptls_t ptls, jl_datatype_t 
 // See the call to `gc_mark_loop` in init with a `NULL` `ptls`.
 void *gc_mark_label_addrs[_GC_MARK_L_MAX];
 
+// Size information used for copying from the data-stack during work-stealing
+size_t gc_mark_label_sizes[_GC_MARK_L_MAX];
+
 // Double the local mark stack (both pc and data)
 static void NOINLINE gc_mark_stack_resize(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp) JL_NOTSAFEPOINT
 {
     jl_gc_mark_data_t *old_data = gc_cache->data_stack;
     void **pc_stack = sp->pc_start;
     size_t stack_size = sp->pc_end - pc_stack;
-    sp->data_start = gc_cache->data_stack = (jl_gc_mark_data_t *)realloc_s(old_data, stack_size * 2 * sizeof(jl_gc_mark_data_t));
+    gc_cache->data_stack = (jl_gc_mark_data_t *)realloc_s(old_data, stack_size * 2 * sizeof(jl_gc_mark_data_t));
     sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + (((char*)gc_cache->data_stack) - ((char*)old_data)));
 
     sp->pc_start = gc_cache->pc_stack = (void**)realloc_s(pc_stack, stack_size * 2 * sizeof(void*));
@@ -1698,13 +1701,6 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
     }
 }
 
-// Helper functions for the lock-free work-stealing deque from Arora et. al [1].
-//
-// [1] Nimar S. Arora; Robert D. Blumofe; and C. Greg Plaxton.
-// Thread scheduling for multiprogrammed multiprocessors.
-// Proceedings of the Tenth Annual ACM Symposium on Paralle Algorithms
-// and Architectures, 1998.
-
 STATIC_INLINE int gc_ws_assign_victim(int self)
 {
     // TODO: this will eventually need some randomization.
@@ -1714,8 +1710,7 @@ STATIC_INLINE int gc_ws_assign_victim(int self)
         if (i != self) {
             jl_ptls_t ptls2 = jl_all_tls_states[i];
             jl_gc_mark_sp_t sp2 = ptls2->gc_mark_sp;
-            // also needs to be fixed with the randomized assignment above
-	    if (sp2.pc > sp2.pc_start) {
+	        if (sp2.pc > sp2.pc_start + GC_WS_GRAINSIZE) {
                 return i;
             }
         }
@@ -2061,10 +2056,10 @@ STATIC_INLINE int gc_mark_scan_obj32(jl_ptls_t ptls, jl_gc_mark_sp_t *sp, gc_mar
     return 0;
 }
 
-#if defined(__GNUC__) && !defined(_OS_EMSCRIPTEN_)
-#  define gc_mark_laddr(name) (&&name)
-#  define gc_mark_jmp(ptr) goto *(ptr)
-#else
+// #if defined(__GNUC__) && !defined(_OS_EMSCRIPTEN_)
+// #  define gc_mark_laddr(name) (&&name)
+// #  define gc_mark_jmp(ptr) goto *(ptr)
+// #else
 #define gc_mark_laddr(name) ((void*)(uintptr_t)GC_MARK_L_##name)
 #define gc_mark_jmp(ptr) do {                   \
         switch ((int)(uintptr_t)ptr) {          \
@@ -2096,7 +2091,7 @@ STATIC_INLINE int gc_mark_scan_obj32(jl_ptls_t ptls, jl_gc_mark_sp_t *sp, gc_mar
             abort();                            \
         }                                       \
     } while (0)
-#endif
+// #endif
 
 // This is the main marking loop.
 // It uses an iterative (mostly) Depth-first search (DFS) to mark all the objects.
@@ -2179,12 +2174,26 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
         gc_mark_label_addrs[GC_MARK_L_stack] = gc_mark_laddr(stack);
         gc_mark_label_addrs[GC_MARK_L_excstack] = gc_mark_laddr(excstack);
         gc_mark_label_addrs[GC_MARK_L_module_binding] = gc_mark_laddr(module_binding);
+
+        gc_mark_label_sizes[GC_MARK_L_marked_obj] = sizeof(gc_mark_marked_obj_t);
+        gc_mark_label_sizes[GC_MARK_L_scan_only] = 0;
+        gc_mark_label_sizes[GC_MARK_L_finlist] = sizeof(gc_mark_finlist_t);
+        gc_mark_label_sizes[GC_MARK_L_objarray] = sizeof(gc_mark_objarray_t);
+        gc_mark_label_sizes[GC_MARK_L_array8] = sizeof(gc_mark_array8_t);
+        gc_mark_label_sizes[GC_MARK_L_array16] = sizeof(gc_mark_array16_t);
+        gc_mark_label_sizes[GC_MARK_L_obj8] = sizeof(gc_mark_obj8_t);
+        gc_mark_label_sizes[GC_MARK_L_obj16] = sizeof(gc_mark_obj16_t);
+        gc_mark_label_sizes[GC_MARK_L_obj32] = sizeof(gc_mark_obj32_t);
+        gc_mark_label_sizes[GC_MARK_L_stack] = sizeof(gc_mark_stackframe_t);
+        gc_mark_label_sizes[GC_MARK_L_excstack] = sizeof(gc_mark_excstack_t);
+        gc_mark_label_sizes[GC_MARK_L_module_binding] = sizeof(gc_mark_binding_t);
+
         return;
     }
 
     int self = ptls->tid;
     int ws_victim;
-    jl_gc_pc_start_t ws_start;
+    jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
 
     jl_value_t *new_obj = NULL;
     uintptr_t tag = 0;
@@ -2208,41 +2217,39 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     uint16_t *obj16_begin;
     uint16_t *obj16_end;
 
-pop: {  
-        ws_start = jl_atomic_load_acquire(&ptls->gc_cache.ws_start);
-        if (sp.pc) {
-            if (sp.pc == ws_start.pc_start) {
-                while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
-                    jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
-                    jl_gc_mark_cache_t *gc_cache2 = &ptls2->gc_cache;
-                    jl_gc_ws_start_t ws_start2 = jl_atomic_load_acquire(&gc_cache2->ws_start);
-
-                    JL_LOCK_NOGC(&gc_cache2.stack_lock);
-                    if (sp2.pc > ws_start2.pc_start) {
-                        size_t data_size = sizeof(union _jl_gc_mark_data);
-                        jl_gc_ws_start_t ws_start_on_success = {ws_offset2.pc_start + 1, 
-                                                                ws_offset2.ws_tag};
-                                                                
-                        if (jl_atomic_cmpswap(&gc_cache2->ws_start, &ws_start2, ws_start_on_success)) {
-            	            gc_mark_stack_push(&ptls->gc_cache, &sp, ws_start2.pc_start, gc_cache2.data_stack_start,
-                                               data_size, 0);
-                            JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
-                            gc_mark_jmp(*sp.pc);
-                        }
-                    }
-                    JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
+pop: {
+        if (sp.pc != sp.pc_start) {
+            sp.pc--;
+            gc_mark_jmp(*sp.pc);
+        }
+        // Nothing left in thread's pc-stack, may steal from another thread
+        while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
+            jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
+            jl_gc_mark_cache_t *gc_cache2 = &ptls2->gc_cache;
+            jl_gc_mark_sp_t *sp2 = &ptls2->gc_mark_sp;
+            // Victim's stack-lock needs to be held to prevent a resize/reallocation
+            // of its mark-stack.
+            JL_LOCK_NOGC(&gc_cache2->stack_lock);
+            void **pc_start2 = gc_cache2->pc_stack;
+            // We require at least GC_WS_GRAINSIZE objects to steal
+            // to make up for the cost of acquiring the stack-lock
+            if (sp2->pc >= pc_start2 + GC_WS_GRAINSIZE) {
+                char *stolen_data = (char *)gc_cache2->data_stack;
+                for (void **stolen_pc = pc_start2; 
+                    stolen_pc < pc_start2 + GC_WS_GRAINSIZE; stolen_pc++) {
+                    // TODO: change this to support GNU's `labels as values`
+                    size_t data_size = gc_mark_label_sizes[(int)(uintptr_t)(*stolen_pc)];
+                    gc_mark_stack_push(&ptls->gc_cache, &sp, *stolen_pc, 
+                                        stolen_data, data_size, 1);
+                    stolen_data += data_size;
                 }
-            }
-            void **pc2 = --sp.pc;
-            if (pc2 >= ws_start.pc_start) {
+                gc_cache2->pc_stack += GC_WS_GRAINSIZE;
+                gc_cache2->data_stack = (jl_gc_mark_data_t *)stolen_data;
+                export_gc_state(ptls, &sp);
+                JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
                 gc_mark_jmp(*sp.pc);
             }
-            sp.pc = NULL;
-            jl_gc_ws_offset_t new_ws_start = {NULL, ws_start.ws_tag + 1};
-            if (pc2 == ws_pc_start && jl_atomic_cmpswap(&sp.ws_offset, &old_ws_offset, new_ws_offset)) {
-      	        gc_mark_jmp(*sp.pc);
-            }
-            jl_atomic_store_release(&sp.ws_offset, new_ws_offset);
+            JL_UNLOCK_NOGC(&gc_cache2->stack_lock);
         }
         return;
     }
@@ -2552,6 +2559,11 @@ finlist: {
     }
 
 mark: {
+        // Thread was a victim of work-stealing
+        if (sp.pc_start != gc_cache->pc_stack) {
+            sp.pc_start = gc_cache->pc_stack;
+        }
+        export_gc_state(ptls, &sp);
         // Generic scanning entry point.
         // Expects `new_obj`, `tag` and `bits` to be set correctly.
 #ifdef JL_DEBUG_BUILD
@@ -3497,8 +3509,7 @@ void jl_gc_init(void)
     if (maxmem > max_collect_interval)
         max_collect_interval = maxmem;
 #endif
-    jl_gc_ws_offset_t ws_offset = {0, 0, 0};
-    jl_gc_mark_sp_t sp = {NULL, NULL, NULL, NULL, NULL, ws_offset};
+    jl_gc_mark_sp_t sp = {NULL, NULL, NULL, NULL};
     gc_mark_loop(NULL, sp);
 }
 

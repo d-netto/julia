@@ -32,6 +32,8 @@ extern "C" {
 #define GC_PAGE_LG2 14 // log2(size of a page)
 #define GC_PAGE_SZ (1 << GC_PAGE_LG2) // 16k
 #define GC_PAGE_OFFSET (JL_HEAP_ALIGNMENT - (sizeof(jl_taggedvalue_t) % JL_HEAP_ALIGNMENT))
+// Number of objects stolen during a sucessful work-stealing round in the mark-loop
+#define GC_WS_GRAINSIZE 8
 
 #define jl_malloc_tag ((void*)0xdeadaa01)
 #define jl_singleton_tag ((void*)0xdeadaa02)
@@ -498,11 +500,9 @@ STATIC_INLINE void gc_big_object_link(bigval_t *hdr, bigval_t **list) JL_NOTSAFE
 
 STATIC_INLINE void gc_mark_sp_init(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
 {
-    sp->data = sp->data_start = gc_cache->data_stack;
+    sp->data = gc_cache->data_stack;
     sp->pc = sp->pc_start = gc_cache->pc_stack;
     sp->pc_end = gc_cache->pc_stack_end;
-    jl_gc_ws_offset_t ws_offset = {0, 0, 0};
-    jl_atomic_store_release(&sp->ws_offset, ws_offset);
 }
 
 void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_mark_sp_t *sp);

@@ -174,14 +174,10 @@ typedef union _jl_gc_mark_data jl_gc_mark_data_t;
 
 typedef struct {
     void **pc; // Current stack address for the pc (up growing)
-    void **pc_end; // Cached value of `gc_cache->pc_stack_end`
     jl_gc_mark_data_t *data; // Current stack address for the data (up growing)
+    void **pc_start; // Cached value of `gc_cache->pc_stack`
+    void **pc_end; // Cached value of `gc_cache->pc_stack_end`
 } jl_gc_mark_sp_t;
-
-typedef struct {
-    void **pc_start;
-    size_t ws_tag;
-} jl_gc_ws_start_t;
 
 typedef struct {
     // thread local increment of `perm_scanned_bytes`
@@ -199,10 +195,8 @@ typedef struct {
     // this makes sure that a single objects can only appear once in
     // the lists (the mark bit cannot be flipped to `0` without sweeping)
     void *big_obj[1024];
-    _Atomic(jl_gc_ws_start_t) ws_start;
     void **pc_stack;
     void **pc_stack_end;
-    jl_gc_mark_data_t *data_stack_start;
     jl_gc_mark_data_t *data_stack;
     jl_mutex_t stack_lock;
 } jl_gc_mark_cache_t;
