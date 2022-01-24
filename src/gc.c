@@ -2243,13 +2243,13 @@ pop: {
                     char *ws_data = (char *)gc_cache2->data_stack;
                     fprintf(stderr, "%c\n", *ws_data);
                     for (void **ws_pc = pc_start2; 
-                    ws_pc < pc_start2 + GC_WS_GRAINSIZE; ws_pc++) {
+                        ws_pc < pc_start2 + GC_WS_GRAINSIZE; ws_pc++) {
                         // TODO: change this to support GNU's `labels as values`
                         fprintf(stderr, "getting sz\n");
-                            size_t ws_data_size = gc_mark_label_sizes[(int)(uintptr_t)(*ws_pc)];
+                        size_t ws_data_size = gc_mark_label_sizes[(int)(uintptr_t)(*ws_pc)];
                         fprintf(stderr, "%d pushed obj of size %d. ptr = %p\n", self, ws_data_size, ws_data);
                         gc_mark_stack_push(gc_cache, &sp, *ws_pc, 
-                                               ws_data, ws_data_size, 1);
+                                           ws_data, ws_data_size, 1);
                         ws_data += ws_data_size;
                     }
                     fprintf(stderr, "%d pushed all elts when stealing from %d\n", self, ws_victim);
