@@ -1674,13 +1674,10 @@ static void NOINLINE gc_mark_stack_resize(jl_gc_mark_cache_t *gc_cache, jl_gc_ma
     void **pc_stack = sp->pc_start;
     size_t stack_size = sp->pc_end - pc_stack;
 
-    JL_LOCK_NOGC(&gc_cache->stack_lock);
     gc_cache->data_stack = (jl_gc_mark_data_t *)realloc_s(old_data, stack_size * 2 * sizeof(jl_gc_mark_data_t));
     sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + (((char*)gc_cache->data_stack) - ((char*)old_data)));
     sp->pc_start = gc_cache->pc_stack = (void**)realloc_s(pc_stack, stack_size * 2 * sizeof(void*));   
     gc_cache->pc_stack_end = sp->pc_end = sp->pc_start + stack_size * 2;
-    JL_UNLOCK_NOGC(&gc_cache->stack_lock);
-
     sp->pc = sp->pc_start + (sp->pc - pc_stack);
 }
 
@@ -1694,8 +1691,11 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
                                       void *pc, void *data, size_t data_size, int inc) JL_NOTSAFEPOINT
 {
     assert(data_size <= sizeof(jl_gc_mark_data_t));
-    if (__unlikely(sp->pc == sp->pc_end))
+    if (__unlikely(sp->pc == sp->pc_end)) {
+	JL_LOCK_NOGC(&gc_cache->stack_lock);
         gc_mark_stack_resize(gc_cache, sp);
+	JL_UNLOCK_NOGC(&gc_cache->stack_lock);
+    }
     *sp->pc = pc;
     memcpy(sp->data, data, data_size);
     if (inc) {
@@ -2179,7 +2179,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
         gc_mark_label_addrs[GC_MARK_L_module_binding] = gc_mark_laddr(module_binding);
 
         gc_mark_label_sizes[GC_MARK_L_marked_obj] = sizeof(gc_mark_marked_obj_t);
-        gc_mark_label_sizes[GC_MARK_L_scan_only] = 0;
+        gc_mark_label_sizes[GC_MARK_L_scan_only] = sizeof(gc_mark_marked_obj_t);
         gc_mark_label_sizes[GC_MARK_L_finlist] = sizeof(gc_mark_finlist_t);
         gc_mark_label_sizes[GC_MARK_L_objarray] = sizeof(gc_mark_objarray_t);
         gc_mark_label_sizes[GC_MARK_L_array8] = sizeof(gc_mark_array8_t);
@@ -2223,42 +2223,51 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
 pop: {
         if (sp.pc != sp.pc_start) {
             sp.pc--;
-	    fprintf(stderr, "%d is popping; jummping to %p\n", self, *sp.pc);
+	    fprintf(stderr, "%d is popping; jumpping to %p\n", self, *sp.pc);
             gc_mark_jmp(*sp.pc);
         }
         // Nothing left in thread's pc-stack, may steal from another thread
+        JL_LOCK_NOGC(&gc_cache->stack_lock);
+	sp.data = gc_cache->data_stack;
         while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
             jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
             jl_gc_mark_cache_t *gc_cache2 = &ptls2->gc_cache;
             // Victim's stack-lock needs to be held to prevent a resize/reallocation
             // of its mark-stack.
-            JL_LOCK_NOGC(&gc_cache2->stack_lock);
-            void **pc_start2 = gc_cache2->pc_stack;
-	    void **pc2 = ptls2->gc_mark_sp.pc;
-            // We require at least GC_WS_GRAINSIZE objects to steal
-            // to make up for the cost of acquiring the stack-lock
-            if (pc2 >= pc_start2 + GC_WS_GRAINSIZE) {
-               	fprintf(stderr, "%d is stealing from %d!\n", self, ws_victim);
-		char *ws_data = (char *)gc_cache2->data_stack;
-                for (void **ws_pc = pc_start2; 
-                    ws_pc < pc_start2 + GC_WS_GRAINSIZE; ws_pc++) {
-                    // TODO: change this to support GNU's `labels as values`
-                    size_t ws_data_size = gc_mark_label_sizes[(int)(uintptr_t)(*ws_pc)];
-                    gc_mark_stack_push(gc_cache, &sp, *ws_pc, 
+            uint8_t lock_held = jl_mutex_trylock_nogc(&gc_cache2->stack_lock);
+	    if (lock_held) {
+            	void **pc_start2 = gc_cache2->pc_stack + 1;
+	    	void **pc2 = ptls2->gc_mark_sp.pc;
+            	// We require at least GC_WS_GRAINSIZE objects to steal
+            	// to make up for the cost of acquiring the stack-lock
+            	if (pc2 && pc2 > pc_start2 + GC_WS_GRAINSIZE && 
+			jl_mutex_trylock_nogc(&ptls->gc_cache.stack_lock)) {
+               		fprintf(stderr, "%d is stealing from %d!\n", self, ws_victim);
+			char *ws_data = (char *)gc_cache2->data_stack;
+			fprintf(stderr, "%c\n", *ws_data);
+                	for (void **ws_pc = pc_start2; 
+                	    ws_pc < pc_start2 + GC_WS_GRAINSIZE; ws_pc++) {
+                    	// TODO: change this to support GNU's `labels as values`
+                    	fprintf(stderr, "getting sz\n");
+                   	 size_t ws_data_size = gc_mark_label_sizes[(int)(uintptr_t)(*ws_pc)];
+		    	fprintf(stderr, "%d pushed obj of size %d. ptr = %p\n", self, ws_data_size, ws_data);
+		    	gc_mark_stack_push(gc_cache, &sp, *ws_pc, 
                                        ws_data, ws_data_size, 1);
-                    ws_data += ws_data_size;
-                }
-		fprintf(stderr, "%d pushed all elts when stealing from %d\n", self, ws_victim);
-                // TODO: update sp.pc_start and gc_cache->pc_stack?
-		gc_cache2->pc_stack += GC_WS_GRAINSIZE;
-                gc_cache2->data_stack = (jl_gc_mark_data_t *)ws_data;
-                export_gc_state(ptls, &sp);
-                JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
-                goto pop;
-            }
-            JL_UNLOCK_NOGC(&gc_cache2->stack_lock);
-        }
-        return;
+                    	ws_data += ws_data_size;
+                	}
+			fprintf(stderr, "%d pushed all elts when stealing from %d\n", self, ws_victim);
+                	// TODO: update sp.pc_start and gc_cache->pc_stack?
+			gc_cache2->pc_stack += GC_WS_GRAINSIZE;
+                	gc_cache2->data_stack = (jl_gc_mark_data_t *)ws_data;
+                	export_gc_state(ptls, &sp);
+               		JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
+               	        goto pop;
+          	}
+            	JL_UNLOCK_NOGC(&gc_cache2->stack_lock);
+	  }
+      }
+      JL_UNLOCK_NOGC(&gc_cache->stack_lock);
+       return;
     }
 
 marked_obj: {
@@ -2568,7 +2577,8 @@ finlist: {
 mark: {
         // Thread was a victim of work-stealing
         if (sp.pc_start != gc_cache->pc_stack) {
-            sp.pc_start = gc_cache->pc_stack;
+           // fprintf(stderr, "%d is adjusting sp.pc_start\n", self); 
+	   // sp.pc_start = gc_cache->pc_stack;
         }
         export_gc_state(ptls, &sp);
         // Generic scanning entry point.
