@@ -1691,11 +1691,8 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
                                       void *pc, void *data, size_t data_size, int inc) JL_NOTSAFEPOINT
 {
     assert(data_size <= sizeof(jl_gc_mark_data_t));
-    if (__unlikely(sp->pc == sp->pc_end)) {
-	JL_LOCK_NOGC(&gc_cache->stack_lock);
+    if (__unlikely(sp->pc == sp->pc_end))
         gc_mark_stack_resize(gc_cache, sp);
-	JL_UNLOCK_NOGC(&gc_cache->stack_lock);
-    }
     *sp->pc = pc;
     memcpy(sp->data, data, data_size);
     if (inc) {
@@ -2194,10 +2191,6 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
         return;
     }
 
-    int self = ptls->tid;
-    int ws_victim;
-    jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
-
     jl_value_t *new_obj = NULL;
     uintptr_t tag = 0;
     uint8_t bits = 0;
@@ -2221,50 +2214,11 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     uint16_t *obj16_end;
 
 pop: {
-        if (sp.pc != sp.pc_start) {
+       if (sp.pc != sp.pc_start) {
             sp.pc--;
-            fprintf(stderr, "%d is popping; jumpping to %p\n", self, *sp.pc);
             gc_mark_jmp(*sp.pc);
-        }
-        // Nothing left in thread's pc-stack, may steal from another thread
-        JL_LOCK_NOGC(&gc_cache->stack_lock);
-        sp.data = gc_cache->data_stack;
-        while ((ws_victim = gc_ws_assign_victim(self)) != -1) {
-            jl_ptls_t ptls2 = jl_all_tls_states[ws_victim];
-            jl_gc_mark_cache_t *gc_cache2 = &ptls2->gc_cache;
-            // Victim's stack-lock needs to be held to prevent a resize/reallocation
-            // of its mark-stack.
-            uint8_t lock2_held = jl_mutex_trylock_nogc(&gc_cache2->stack_lock);
-            if (lock2_held) {
-                void **pc_start2 = gc_cache2->pc_stack + 1;
-                void **pc2 = ptls2->gc_mark_sp.pc;
-                if (pc2 && pc2 > pc_start2 + GC_WS_GRAINSIZE) {
-                    fprintf(stderr, "%d is stealing from %d!\n", self, ws_victim);
-                    char *ws_data = (char *)gc_cache2->data_stack;
-                    fprintf(stderr, "%c\n", *ws_data);
-                    for (void **ws_pc = pc_start2; 
-                        ws_pc < pc_start2 + GC_WS_GRAINSIZE; ws_pc++) {
-                        // TODO: change this to support GNU's `labels as values`
-                        fprintf(stderr, "getting sz\n");
-                        size_t ws_data_size = gc_mark_label_sizes[(int)(uintptr_t)(*ws_pc)];
-                        fprintf(stderr, "%d pushed obj of size %d. ptr = %p\n", self, ws_data_size, ws_data);
-                        gc_mark_stack_push(gc_cache, &sp, *ws_pc, 
-                                           ws_data, ws_data_size, 1);
-                        ws_data += ws_data_size;
-                    }
-                    fprintf(stderr, "%d pushed all elts when stealing from %d\n", self, ws_victim);
-                    // TODO: update sp.pc_start and gc_cache->pc_stack?
-                    gc_cache2->pc_stack += GC_WS_GRAINSIZE;
-                    gc_cache2->data_stack = (jl_gc_mark_data_t *)ws_data;
-                    export_gc_state(ptls, &sp);
-                    JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
-                    goto pop;
-                }
-                JL_UNLOCK_NOGC(&ptls2->gc_cache.stack_lock);
-            }
-        }
-        JL_UNLOCK_NOGC(&gc_cache->stack_lock);
-        return;
+       }
+       return;
     }
 
 marked_obj: {
@@ -2572,12 +2526,6 @@ finlist: {
     }
 
 mark: {
-        // Thread was a victim of work-stealing
-        if (sp.pc_start != gc_cache->pc_stack) {
-           // fprintf(stderr, "%d is adjusting sp.pc_start\n", self); 
-	   // sp.pc_start = gc_cache->pc_stack;
-        }
-        export_gc_state(ptls, &sp);
         // Generic scanning entry point.
         // Expects `new_obj`, `tag` and `bits` to be set correctly.
 #ifdef JL_DEBUG_BUILD

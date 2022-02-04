@@ -180,6 +180,16 @@ typedef struct {
 } jl_gc_mark_sp_t;
 
 typedef struct {
+	unsigned int pc_offset;
+	unsigned int data_offset;
+} jl_gc_ws_offset_t;
+
+typedef struct {
+	_Atomic(jl_gc_ws_offset_t) ws_offset;
+	jl_gc_mark_sp_t sp;
+} jl_gc_public_mark_sp_t;
+
+typedef struct {
     // thread local increment of `perm_scanned_bytes`
     size_t perm_scanned_bytes;
     // thread local increment of `scanned_bytes`
@@ -198,7 +208,7 @@ typedef struct {
     void **pc_stack;
     void **pc_stack_end;
     jl_gc_mark_data_t *data_stack;
-    jl_mutex_t stack_lock;
+    jl_gc_public_mark_sp_t public_sp;
 } jl_gc_mark_cache_t;
 
 struct _jl_bt_element_t;
@@ -264,8 +274,8 @@ typedef struct _jl_tls_states_t {
     jl_thread_t system_id;
     arraylist_t finalizers;
     jl_gc_mark_cache_t gc_cache;
-    arraylist_t sweep_objs;
     jl_gc_mark_sp_t gc_mark_sp;
+    arraylist_t sweep_objs;
     // Saved exception for previous *external* API call or NULL if cleared.
     // Access via jl_exception_occurred().
     struct _jl_value_t *previous_exception;
