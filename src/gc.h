@@ -213,25 +213,43 @@ union _jl_gc_mark_data {
 // Pop a data struct from the mark data stack (i.e. decrease the stack pointer)
 // This should be used after dispatch and therefore the pc stack pointer is already popped from
 // the stack.
-STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_sp_t *sp, size_t size)
+STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp, size_t size)
 {
-    jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)(((char*)sp->data) - size);
-    sp->data = data;
+    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+    jl_gc_mark_sp_t *avail_sp = NULL;
+    if (sp->pc == sp->pc_start) { 
+        fprintf(stderr, "Popping from global data stack\n");
+        avail_sp = &public_sp->sp;
+    } else {
+        fprintf(stderr, "Popping from local stack\n");
+        avail_sp = sp;
+    }
+    jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) - size);
+    avail_sp->data = data;
     return data;
 }
-#define gc_pop_markdata(sp, type) ((type*)gc_pop_markdata_(sp, sizeof(type)))
+#define gc_pop_markdata(gc_cache, sp, type) ((type*)gc_pop_markdata_(gc_cache, sp, sizeof(type)))
 
 // Re-push a frame to the mark stack (both data and pc)
 // The data and pc are expected to be on the stack (or updated in place) already.
 // Mainly useful to pause the current scanning in order to scan an new object.
-STATIC_INLINE void *gc_repush_markdata_(jl_gc_mark_sp_t *sp, size_t size) JL_NOTSAFEPOINT
+STATIC_INLINE void *gc_repush_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp, size_t size) JL_NOTSAFEPOINT
 {
-    jl_gc_mark_data_t *data = sp->data;
-    sp->pc++;
-    sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + size);
+    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+    jl_gc_mark_sp_t *avail_sp = NULL;
+    if (public_sp->sp.pc < public_sp->sp.pc_end) {
+        fprintf(stderr, "Repushing into global stack\n");
+        avail_sp = &public_sp->sp;
+    } else {
+        fprintf(stderr, "Repushing into local stack\n");
+        avail_sp = sp;
+    }
+    jl_gc_mark_data_t *data = avail_sp->data;
+    avail_sp->pc++;
+    avail_sp->data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) + size);
     return data;
 }
-#define gc_repush_markdata(sp, type) ((type*)gc_repush_markdata_(sp, sizeof(type)))
+#define gc_repush_markdata(gc_cache, sp, type) ((type*)gc_repush_markdata_(gc_cache, sp, sizeof(type)))
 
 // layout for big (>2k) objects
 

@@ -1690,6 +1690,7 @@ static void NOINLINE gc_mark_stack_resize(jl_gc_mark_cache_t *gc_cache, jl_gc_ma
 STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp,
                                       void *pc, void *data, size_t data_size, int inc) JL_NOTSAFEPOINT
 {
+    // TODO: public mark-stack
     assert(data_size <= sizeof(jl_gc_mark_data_t));
     if (__unlikely(sp->pc == sp->pc_end))
         gc_mark_stack_resize(gc_cache, sp);
@@ -2213,12 +2214,13 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     uint16_t *obj16_begin;
     uint16_t *obj16_end;
 
-pop: {
-       if (sp.pc != sp.pc_start) {
+pop: {  
+        // TODO: public mark-stack
+        if (sp.pc != sp.pc_start) {
             sp.pc--;
             gc_mark_jmp(*sp.pc);
-       }
-       return;
+        }
+        return;
     }
 
 marked_obj: {
