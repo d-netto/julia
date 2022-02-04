@@ -32,8 +32,7 @@ extern "C" {
 #define GC_PAGE_LG2 14 // log2(size of a page)
 #define GC_PAGE_SZ (1 << GC_PAGE_LG2) // 16k
 #define GC_PAGE_OFFSET (JL_HEAP_ALIGNMENT - (sizeof(jl_taggedvalue_t) % JL_HEAP_ALIGNMENT))
-// Number of objects stolen during a sucessful work-stealing round in the mark-loop
-#define GC_WS_GRAINSIZE 8
+// #define GC_WS_DEBUG
 
 #define jl_malloc_tag ((void*)0xdeadaa01)
 #define jl_singleton_tag ((void*)0xdeadaa02)
@@ -218,10 +217,15 @@ STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
     jl_gc_mark_sp_t *avail_sp = NULL;
     if (sp->pc == sp->pc_start) { 
-        fprintf(stderr, "Popping from global data stack\n");
+        #ifdef GC_WS_DEBUG
+            fprintf(stderr, "popped from global-stack\n");
+        #endif
         avail_sp = &public_sp->sp;
     } else {
-        fprintf(stderr, "Popping from local stack\n");
+        
+        #ifdef GC_WS_DEBUG
+            fprintf(stderr, "popped from local-stack\n");
+        #endif
         avail_sp = sp;
     }
     jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) - size);
@@ -238,10 +242,14 @@ STATIC_INLINE void *gc_repush_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
     jl_gc_mark_sp_t *avail_sp = NULL;
     if (public_sp->sp.pc < public_sp->sp.pc_end) {
-        fprintf(stderr, "Repushing into global stack\n");
+        #ifdef GC_WS_DEBUG
+            fprintf(stderr, "repushed into global-stack\n");
+        #endif
         avail_sp = &public_sp->sp;
     } else {
-        fprintf(stderr, "Repushing into local stack\n");
+        #ifdef GC_WS_DEBUG
+            fprintf(stderr, "repushed into global-stack\n");
+        #endif
         avail_sp = sp;
     }
     jl_gc_mark_data_t *data = avail_sp->data;
