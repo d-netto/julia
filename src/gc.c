@@ -1681,6 +1681,13 @@ static void NOINLINE gc_mark_stack_resize(jl_gc_mark_cache_t *gc_cache, jl_gc_ma
     sp->pc = sp->pc_start + (sp->pc - pc_stack);
 }
 
+typedef enum {
+    no_inc,
+    inc,
+    inc_pc_only,
+    inc_data_only
+} jl_gc_push_mode_t;
+
 // Push a work item to the stack. The type of the work item is marked with `pc`.
 // The data needed is in `data` and is of size `data_size`.
 // If there isn't enough space on the stack, the stack will be resized with the stack
@@ -1688,7 +1695,7 @@ static void NOINLINE gc_mark_stack_resize(jl_gc_mark_cache_t *gc_cache, jl_gc_ma
 // in `gc_cache` or `sp`
 // The `sp` will be updated on return if `inc` is true.
 STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp,
-                                      void *pc, void *data, size_t data_size, int inc) JL_NOTSAFEPOINT
+                                      void *pc, void *data, size_t data_size, jl_gc_push_mode_t pm) JL_NOTSAFEPOINT
 {
     assert(data_size <= sizeof(jl_gc_mark_data_t));
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
@@ -1703,9 +1710,11 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
     }
     *avail_sp->pc = pc;
     memcpy(avail_sp->data, data, data_size);
-    if (inc) {
-        avail_sp->data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) + data_size);
+    if (pm == inc || pm == inc_pc_only) {
         avail_sp->pc++;
+    }
+    if (pm == inc || pm == inc_data_only) {
+        avail_sp->data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) + data_size);
     }
 }
 
@@ -2190,7 +2199,6 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
 
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-    jl_gc_mark_sp_t *avail_sp = NULL;
     
     jl_value_t *new_obj = NULL;
     uintptr_t tag = 0;
@@ -2216,22 +2224,11 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
 
 pop: {  
         if (sp.pc != sp.pc_start) {
-            avail_sp = &sp;
             sp.pc--;
-            #ifdef GC_WS_DEBUG
-                fprintf(stderr, "popped from private pc-stack\n");
-            #endif
             gc_mark_jmp(*sp.pc);
         } 
         else if (public_sp->sp.pc != public_sp->sp.pc_start) {
-            if (public_sp->sp.pc == public_sp->sp.pc_start + 1)
-                avail_sp = &sp;
-            else
-                avail_sp = &public_sp->sp;
             public_sp->sp.pc--;
-            #ifdef GC_WS_DEBUG
-                fprintf(stderr, "popped from public pc-stack\n");
-            #endif
             gc_mark_jmp(*public_sp->sp.pc);
         }
         return;
@@ -2496,11 +2493,12 @@ module_binding: {
             gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(objarray),
                                &data, sizeof(data), 0);
             if (!scanparent) {
-                objary = (gc_mark_objarray_t*)avail_sp->data;
+                objary = gc_bottom_markdata(gc_cache, &sp);
                 goto objarray_loaded;
             }
-            avail_sp->data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) + sizeof(data));
-            avail_sp->pc++;
+            gc_repush_markdata(gc_cache, &sp, gc_mark_objarray_t);
+            // avail_sp->data = gc_bottom_markdata(gc_cache, &sp)) + sizeof(data));
+            // avail_sp->pc++;
         }
         else {
             gc_mark_push_remset(ptls, (jl_value_t*)m, binding->nptr);
@@ -2573,7 +2571,7 @@ mark: {
             gc_mark_objarray_t markdata = {new_obj, objary_begin, objary_end, 1, nptr};
             gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(objarray),
                                &markdata, sizeof(markdata), 0);
-            objary = (gc_mark_objarray_t*)avail_sp->data;
+            objary = gc_bottom_markdata(gc_cache, &sp);
             goto objarray_loaded;
         }
         else if (vt->name == jl_array_typename) {
@@ -2629,7 +2627,7 @@ mark: {
                 gc_mark_objarray_t markdata = {new_obj, objary_begin, objary_end, 1, nptr};
                 gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(objarray),
                                    &markdata, sizeof(markdata), 0);
-                objary = (gc_mark_objarray_t*)avail_sp->data;
+                objary = gc_bottom_markdata(gc_cache, &sp);
                 goto objarray_loaded;
             }
             else if (flags.hasptr) {
@@ -2646,7 +2644,7 @@ mark: {
                     gc_mark_objarray_t markdata = {new_obj, objary_begin, objary_end, elsize, nptr};
                     gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(objarray),
                                        &markdata, sizeof(markdata), 0);
-                    objary = (gc_mark_objarray_t*)avail_sp->data;
+                    objary = gc_bottom_markdata(gc_cache, &sp);
                     goto objarray_loaded;
                 }
                 else if (layout->fielddesc_type == 0) {
@@ -2655,7 +2653,7 @@ mark: {
                     gc_mark_array8_t markdata = {objary_begin, objary_end, obj8_begin, {new_obj, obj8_begin, obj8_end, nptr}};
                     gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(array8),
                                        &markdata, sizeof(markdata), 0);
-                    ary8 = (gc_mark_array8_t*)avail_sp->data;
+                    ary8 = gc_bottom_markdata(gc_cache, &sp);
                     goto array8_loaded;
                 }
                 else if (layout->fielddesc_type == 1) {
@@ -2664,7 +2662,7 @@ mark: {
                     gc_mark_array16_t markdata = {objary_begin, objary_end, obj16_begin, {new_obj, obj16_begin, obj16_end, nptr}};
                     gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(array16),
                                        &markdata, sizeof(markdata), 0);
-                    ary16 = (gc_mark_array16_t*)avail_sp->data;
+                    ary16 = gc_bottom_markdata(gc_cache, &sp);
                     goto array16_loaded;
                 }
                 else {
@@ -2684,8 +2682,8 @@ mark: {
             uintptr_t nptr = ((bsize + m->usings.len + 1) << 2) | (bits & GC_OLD);
             gc_mark_binding_t markdata = {m, table + 1, table + bsize, nptr, bits};
             gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(module_binding),
-                               &markdata, sizeof(markdata), 0);
-            avail_sp->data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) + sizeof(markdata));
+                               &markdata, sizeof(markdata), inc_data_only);
+            // avail_sp->data = gc_bottom_markdata(gc_cache, &sp)) + sizeof(markdata));
             goto module_binding;
         }
         else if (vt == jl_task_type) {
@@ -2748,7 +2746,7 @@ mark: {
             gc_mark_obj8_t markdata = {new_obj, obj8_begin, obj8_end, nptr};
             gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(obj8),
                                &markdata, sizeof(markdata), 0);
-            obj8 = (gc_mark_obj8_t*)avail_sp->data;
+            obj8 = gc_bottom_markdata(gc_cache, &sp);
             obj8_parent = (char*)ta;
             goto obj8_loaded;
         }
@@ -2784,7 +2782,7 @@ mark: {
                 gc_mark_obj8_t markdata = {new_obj, obj8_begin, obj8_end, nptr};
                 gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(obj8),
                                    &markdata, sizeof(markdata), 0);
-                obj8 = (gc_mark_obj8_t*)avail_sp->data;
+                obj8 = gc_bottom_markdata(gc_cache, &sp);
                 goto obj8_loaded;
             }
             else if (layout->fielddesc_type == 1) {
@@ -2795,7 +2793,7 @@ mark: {
                 gc_mark_obj16_t markdata = {new_obj, obj16_begin, obj16_end, nptr};
                 gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(obj16),
                                    &markdata, sizeof(markdata), 0);
-                obj16 = (gc_mark_obj16_t*)avail_sp->data;
+                obj16 = gc_bottom_markdata(gc_cache, &sp);
                 goto obj16_loaded;
             }
             else if (layout->fielddesc_type == 2) {
@@ -2805,8 +2803,8 @@ mark: {
                 uint32_t *obj32_end = obj32_begin + npointers;
                 gc_mark_obj32_t markdata = {new_obj, obj32_begin, obj32_end, nptr};
                 gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(obj32),
-                                   &markdata, sizeof(markdata), 0);
-                avail_sp->data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) + sizeof(markdata));
+                                   &markdata, sizeof(markdata), inc_data_only);
+                // avail_sp->data = gc_bottom_markdata(gc_cache, &sp)) + sizeof(markdata));
                 goto obj32;
             }
             else {
