@@ -230,6 +230,9 @@ STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp
     }
     jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) - size);
     avail_sp->data = data;
+    #ifdef GC_WS_DEBUG
+        fprintf(stderr, "data: %p\n", data);
+    #endif
     return data;
 }
 #define gc_pop_markdata(gc_cache, sp, type) ((type*)gc_pop_markdata_(gc_cache, sp, sizeof(type)))
@@ -240,13 +243,13 @@ STATIC_INLINE void *gc_bottom_markdata(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_
     jl_gc_mark_sp_t *avail_sp = NULL;
     if (sp->data == gc_cache->data_stack) { 
         #ifdef GC_WS_DEBUG
-            fprintf(stderr, "popped from global-stack\n");
+            fprintf(stderr, "getting bottom of global-stack\n");
         #endif
         avail_sp = &public_sp->sp;
     } 
     else { 
         #ifdef GC_WS_DEBUG
-            fprintf(stderr, "popped from local-stack\n");
+            fprintf(stderr, "getting bottom of local-stack\n");
         #endif
         avail_sp = sp;
     }
@@ -262,11 +265,15 @@ STATIC_INLINE void *gc_repush_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark
     jl_gc_mark_sp_t *avail_sp = NULL;
     if (public_sp->sp.pc < public_sp->sp.pc_end) {
         #ifdef GC_WS_DEBUG
-            fprintf(stderr, "repushed into global-stack %p, %p\n", public_sp->sp.pc, public_sp->sp.pc_end);
+            fprintf(stderr, "repushed into global-stack\n");
         #endif
         avail_sp = &public_sp->sp;
-    } else {
+    } 
+    else {
         #ifdef GC_WS_DEBUG
+             if (public_sp->sp.pc == public_sp->sp.pc_end &&
+                 sp->pc == sp->pc_start)
+                fprintf(stderr, "[Edge case]\n");
             fprintf(stderr, "repushed into local-stack\n");
         #endif
         avail_sp = sp;
