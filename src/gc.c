@@ -1676,6 +1676,7 @@ static void NOINLINE gc_mark_stack_resize(jl_gc_mark_cache_t *gc_cache, jl_gc_ma
 
     gc_cache->data_stack = (jl_gc_mark_data_t *)realloc_s(old_data, stack_size * 2 * sizeof(jl_gc_mark_data_t));
     sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + (((char*)gc_cache->data_stack) - ((char*)old_data)));
+    
     sp->pc_start = gc_cache->pc_stack = (void**)realloc_s(pc_stack, stack_size * 2 * sizeof(void*));   
     gc_cache->pc_stack_end = sp->pc_end = sp->pc_start + stack_size * 2;
     sp->pc = sp->pc_start + (sp->pc - pc_stack);
@@ -1688,40 +1689,47 @@ typedef enum {
     inc_data_only
 } jl_gc_push_mode_t;
 
-// Push a work item to the stack. The type of the work item is marked with `pc`.
-// The data needed is in `data` and is of size `data_size`.
-// If there isn't enough space on the stack, the stack will be resized with the stack
-// lock held. The caller should invalidate any local cache of the stack addresses that's not
-// in `gc_cache` or `sp`
-// The `sp` will be updated on return if `inc` is true.
+STATIC_INLINE void gc_public_mark_stack_push(jl_gc_mark_sp_t *public_sp, void *pc, void *data,
+                                             size_t data_size, jl_gc_push_mode_t pm) JL_NOTSAFEPOINT
+{
+    *public_sp->pc = pc;
+    memcpy(public_sp->data, data, data_size);
+    // TODO: double-check if this fence is consistent with the increments
+    jl_fence();
+    if (pm == inc || pm == inc_pc_only) {
+        public_sp->pc++;
+    }
+    if (pm == inc || pm == inc_data_only) {
+        public_sp->data = (jl_gc_mark_data_t *)(((char*)public_sp->data) + data_size);
+    }
+}
+
+
 STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp,
                                       void *pc, void *data, size_t data_size, jl_gc_push_mode_t pm) JL_NOTSAFEPOINT
 {
     assert(data_size <= sizeof(jl_gc_mark_data_t));
-    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-    jl_gc_mark_sp_t *avail_sp = NULL;
-    if (public_sp->sp.pc < public_sp->sp.pc_end) { 
+    jl_gc_mark_sp_t *public_sp = &gc_cache->public_sp.sp;
+    if (public_sp->pc < public_sp->pc_end) { 
         #ifdef GC_WS_DEBUG
             fprintf(stderr, "pushing into global-stack\n");
         #endif
-        avail_sp = &public_sp->sp;
+        gc_public_mark_stack_push(public_sp, pc, data, data_size, pm);
+        return;
     } 
-    else {
-        #ifdef GC_WS_DEBUG
-            fprintf(stderr, "pushing into local-stack\n");
-        #endif
-        gc_transition_to_private_sp(gc_cache);
-        if (__unlikely(sp->pc == sp->pc_end))
-            gc_mark_stack_resize(gc_cache, sp);
-        avail_sp = sp;
-    }
-    *avail_sp->pc = pc;
-    memcpy(avail_sp->data, data, data_size);
+    #ifdef GC_WS_DEBUG
+        fprintf(stderr, "pushing into local-stack\n");
+    #endif
+    gc_transition_to_private_sp(gc_cache);
+    if (__unlikely(sp->pc == sp->pc_end))
+        gc_mark_stack_resize(gc_cache, sp);
+    *sp->pc = pc;
+    memcpy(sp->data, data, data_size);
     if (pm == inc || pm == inc_pc_only) {
-        avail_sp->pc++;
+        sp->pc++;
     }
     if (pm == inc || pm == inc_data_only) {
-        avail_sp->data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) + data_size);
+        sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + data_size);
     }
 }
 
