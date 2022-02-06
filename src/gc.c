@@ -1769,7 +1769,7 @@ void gc_mark_queue_finlist(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp,
     jl_value_t **items = (jl_value_t**)list->items;
     gc_mark_finlist_t markdata = {items + start, items + len};
     gc_mark_stack_push(gc_cache, sp, gc_mark_label_addrs[GC_MARK_L_finlist],
-                       &markdata, sizeof(markdata), 1);
+                       &markdata, sizeof(markdata), inc);
 }
 
 // Queue a object to be scanned. The object should already be marked and the GC metadata
@@ -1783,7 +1783,7 @@ STATIC_INLINE void gc_mark_queue_scan_obj(jl_gc_mark_cache_t *gc_cache, jl_gc_ma
     tag = tag & ~(uintptr_t)0xf;
     gc_mark_marked_obj_t data = {obj, tag, bits};
     gc_mark_stack_push(gc_cache, sp, gc_mark_label_addrs[GC_MARK_L_scan_only],
-                       &data, sizeof(data), 1);
+                       &data, sizeof(data), inc);
 }
 
 // Mark and queue a object to be scanned.
@@ -1800,7 +1800,7 @@ STATIC_INLINE int gc_mark_queue_obj(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_
         return (int)nptr;
     gc_mark_marked_obj_t data = {obj, tag, bits};
     gc_mark_stack_push(gc_cache, sp, gc_mark_label_addrs[GC_MARK_L_marked_obj],
-                       &data, sizeof(data), 1);
+                       &data, sizeof(data), inc);
     return (int)nptr;
 }
 
@@ -1821,7 +1821,7 @@ JL_DLLEXPORT void jl_gc_mark_queue_objarray(jl_ptls_t ptls, jl_value_t *parent,
                                 jl_astaggedvalue(parent)->bits.gc & 2 };
     gc_mark_stack_push(&ptls->gc_cache, &ptls->gc_mark_sp,
                        gc_mark_label_addrs[GC_MARK_L_objarray],
-                       &data, sizeof(data), 1);
+                       &data, sizeof(data), inc);
 }
 
 
