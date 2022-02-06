@@ -1701,9 +1701,16 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
     jl_gc_mark_sp_t *avail_sp = NULL;
     if (public_sp->sp.pc < public_sp->sp.pc_end) { 
+        #ifdef GC_WS_DEBUG
+            fprintf(stderr, "pushing into global-stack\n");
+        #endif
         avail_sp = &public_sp->sp;
     } 
     else {
+        #ifdef GC_WS_DEBUG
+            fprintf(stderr, "pushing into local-stack\n");
+        #endif
+        gc_transition_to_private_sp(gc_cache);
         if (__unlikely(sp->pc == sp->pc_end))
             gc_mark_stack_resize(gc_cache, sp);
         avail_sp = sp;
@@ -1965,7 +1972,7 @@ STATIC_INLINE int gc_mark_scan_obj8(jl_ptls_t ptls, jl_gc_mark_sp_t *sp, gc_mark
                                     char *parent, uint8_t *begin, uint8_t *end,
                                     jl_value_t **pnew_obj, uintptr_t *ptag, uint8_t *pbits)
 {
-    (void)jl_assume(obj8 == (gc_mark_obj8_t*)sp->data);
+    // (void)jl_assume(obj8 == (gc_mark_obj8_t*)sp->data);
     // (void)jl_assume(begin < end);
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
     for (; begin < end; begin++) {
@@ -2224,10 +2231,17 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
 
 pop: {  
         if (sp.pc != sp.pc_start) {
+            #ifdef GC_WS_DEBUG
+                fprintf(stderr, "popping pc from local-stack\n");
+            #endif
             sp.pc--;
             gc_mark_jmp(*sp.pc);
         } 
         else if (public_sp->sp.pc != public_sp->sp.pc_start) {
+            gc_transition_to_public_sp(gc_cache);
+            #ifdef GC_WS_DEBUG
+                fprintf(stderr, "popping pc from global-stack\n");
+            #endif
             public_sp->sp.pc--;
             gc_mark_jmp(*public_sp->sp.pc);
         }
@@ -3081,9 +3095,9 @@ void jl_gc_clear_recruit(jl_ptls_t ptls)
 
 static void gc_mark_loop_recruited(jl_ptls_t ptls)
 {
-    jl_gc_mark_sp_t sp;
-    import_gc_state(ptls, &sp);
-    gc_mark_loop(ptls, sp);
+    //jl_gc_mark_sp_t sp;
+    //import_gc_state(ptls, &sp);
+    //gc_mark_loop(ptls, sp);
 }
 
 // Only one thread should be running in this function
@@ -3443,6 +3457,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     public_sp->sp.pc = public_sp->sp.pc_start = (void**)malloc_s(init_size * sizeof(void*));
     public_sp->sp.pc_end = public_sp->sp.pc_start + init_size;
     public_sp->sp.data = (jl_gc_mark_data_t *)malloc_s(init_size * sizeof(jl_gc_mark_data_t));
+    gc_cache->using_public_sp = 1;    
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     assert(gc_num.interval == default_collect_interval);

@@ -204,11 +204,12 @@ typedef struct {
     // `1` (atomically). Combining with the sync after marking,
     // this makes sure that a single objects can only appear once in
     // the lists (the mark bit cannot be flipped to `0` without sweeping)
-    void *big_obj[1024];
+    void *big_obj[1024];    
+    uint8_t using_public_sp; 
+    jl_gc_public_mark_sp_t public_sp;
     void **pc_stack;
     void **pc_stack_end;
     jl_gc_mark_data_t *data_stack;
-    jl_gc_public_mark_sp_t public_sp;
 } jl_gc_mark_cache_t;
 
 struct _jl_bt_element_t;
