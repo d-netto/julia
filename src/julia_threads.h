@@ -180,13 +180,10 @@ typedef struct {
 } jl_gc_mark_sp_t;
 
 typedef struct {
-	unsigned int pc_offset;
-	unsigned int data_offset;
-} jl_gc_ws_offset_t;
-
-typedef struct {
-	_Atomic(jl_gc_ws_offset_t) ws_offset;
-	jl_gc_mark_sp_t sp;
+	_Atomic(size_t) top;
+    _Atomic(size_t) bottom;
+    void **pc_start;
+    jl_gc_mark_data_t *data;
 } jl_gc_public_mark_sp_t;
 
 typedef struct {

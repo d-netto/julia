@@ -32,7 +32,8 @@ extern "C" {
 #define GC_PAGE_LG2 14 // log2(size of a page)
 #define GC_PAGE_SZ (1 << GC_PAGE_LG2) // 16k
 #define GC_PAGE_OFFSET (JL_HEAP_ALIGNMENT - (sizeof(jl_taggedvalue_t) % JL_HEAP_ALIGNMENT))
-// #define GC_WS_DEBUG
+#define GC_WS_DEBUG
+#define GC_PUBLIC_MARK_SP_SZ 1024
 
 #define jl_malloc_tag ((void*)0xdeadaa01)
 #define jl_singleton_tag ((void*)0xdeadaa02)
@@ -217,48 +218,68 @@ STATIC_INLINE void gc_transition_to_private_sp(jl_gc_mark_cache_t *gc_cache) {
     gc_cache->using_public_sp = 0;
 }
 
+STATIC_INLINE void *gc_pop_pc(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
+{
+    if (gc_cache->using_public_sp) {
+        jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+        size_t b = jl_atomic_load_relaxed(&public_sp->bottom) - 1;
+        jl_atomic_store_relaxed(&public_sp->bottom, b);
+        jl_fence();
+        size_t t = jl_atomic_load_relaxed(&public_sp->top);
+        int64_t size = b - t;
+        if (size < 0) {
+            jl_atomic_store_relaxed(&public_sp->bottom, t);
+            return NULL;
+        }
+        void *pc = jl_atomic_load_relaxed(
+            (_Atomic(void *) *)&public_sp->pc_start[b % GC_PUBLIC_MARK_SP_SZ]);
+        if (size > 0)
+            return pc;
+        if (!jl_atomic_cmpswap(&public_sp->top, &t, t + 1))
+            pc = NULL;
+        jl_atomic_store_relaxed(&public_sp->bottom, b + 1);
+        return pc;   
+    }
+    sp->pc--;
+    return *sp->pc;
+}
+
 // Pop a data struct from the mark data stack (i.e. decrease the stack pointer)
 // This should be used after dispatch and therefore the pc stack pointer is already popped from
 // the stack.
 STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp, size_t size)
 {
-    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-    jl_gc_mark_sp_t *avail_sp = NULL;
     if (gc_cache->using_public_sp) { 
         #ifdef GC_WS_DEBUG
             fprintf(stderr, "popped from global-stack\n");
-        #endif
-        avail_sp = &public_sp->sp;
-    } 
-    else { 
-        #ifdef GC_WS_DEBUG
-            fprintf(stderr, "popped from local-stack\n");
-        #endif
-        avail_sp = sp;
+        #endif 
+        jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+        jl_gc_mark_data_t *data = public_sp->data;
+        public_sp->data = (jl_gc_mark_data_t *)((char*)data - size);
+        return data;
     }
-    jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) - size);
-    avail_sp->data = data;
+    #ifdef GC_WS_DEBUG
+        fprintf(stderr, "popped from local-stack\n");
+    #endif 
+    jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)(((char*)sp->data) - size);
+    sp->data = data;
     return data;
 }
 #define gc_pop_markdata(gc_cache, sp, type) ((type*)gc_pop_markdata_(gc_cache, sp, sizeof(type)))
 
 STATIC_INLINE void *gc_bottom_markdata(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
 {
-    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-    jl_gc_mark_sp_t *avail_sp = NULL;
     if (gc_cache->using_public_sp) { 
         #ifdef GC_WS_DEBUG
             fprintf(stderr, "getting bottom of global-stack\n");
         #endif
-        avail_sp = &public_sp->sp;
+        jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+        return public_sp->data;
     } 
-    else { 
-        #ifdef GC_WS_DEBUG
-            fprintf(stderr, "getting bottom of local-stack\n");
-        #endif
-        avail_sp = sp;
-    }
-    return avail_sp->data;
+    #ifdef GC_WS_DEBUG
+        fprintf(stderr, "getting bottom of local-stack\n");
+    #endif
+    return sp->data;
 }
 
 // Re-push a frame to the mark stack (both data and pc)
@@ -266,25 +287,22 @@ STATIC_INLINE void *gc_bottom_markdata(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_
 // Mainly useful to pause the current scanning in order to scan an new object.
 STATIC_INLINE void *gc_repush_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp, size_t size) JL_NOTSAFEPOINT
 {
-    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-    jl_gc_mark_sp_t *avail_sp = NULL;
     if (gc_cache->using_public_sp) {
         #ifdef GC_WS_DEBUG
             fprintf(stderr, "repushed into global-stack\n");
         #endif
-        avail_sp = &public_sp->sp;
+        jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+        jl_atomic_fetch_add(&public_sp->bottom, 1);
+        jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)((char*)public_sp->data + size);
+        public_sp->data = data;
+        return data;
     } 
-    else {
-        #ifdef GC_WS_DEBUG
-            fprintf(stderr, "repushed into local-stack\n");
-        #endif
-        avail_sp = sp;
-    }
-    // NOTE: all of the above assumes that a repush doesn't overflow the mark-stack
-    // Does this always hold?
-    jl_gc_mark_data_t *data = avail_sp->data;
-    avail_sp->pc++;
-    avail_sp->data = (jl_gc_mark_data_t *)(((char*)avail_sp->data) + size);
+    #ifdef GC_WS_DEBUG
+        fprintf(stderr, "repushed into local-stack\n");
+    #endif
+    jl_gc_mark_data_t *data = sp->data;
+    sp->pc++;
+    sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + size);
     return data;
 }
 #define gc_repush_markdata(gc_cache, sp, type) ((type*)gc_repush_markdata_(gc_cache, sp, sizeof(type)))

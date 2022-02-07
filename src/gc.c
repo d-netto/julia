@@ -1689,19 +1689,21 @@ typedef enum {
     inc_data_only
 } jl_gc_push_mode_t;
 
-STATIC_INLINE void gc_public_mark_stack_push(jl_gc_mark_sp_t *public_sp, void *pc, void *data,
-                                             size_t data_size, jl_gc_push_mode_t pm) JL_NOTSAFEPOINT
+STATIC_INLINE int gc_public_mark_stack_push(jl_gc_public_mark_sp_t *public_sp, void *pc,
+                                            jl_gc_push_mode_t pm) JL_NOTSAFEPOINT
 {
-    *public_sp->pc = pc;
-    memcpy(public_sp->data, data, data_size);
-    // TODO: double-check if this fence is consistent with the increments
-    jl_fence();
-    if (pm == inc || pm == inc_pc_only) {
-        public_sp->pc++;
-    }
-    if (pm == inc || pm == inc_data_only) {
-        public_sp->data = (jl_gc_mark_data_t *)(((char*)public_sp->data) + data_size);
-    }
+    size_t b = jl_atomic_load_relaxed(&public_sp->bottom);
+    fprintf(stderr, "bottom: %ld", b);
+    size_t t = jl_atomic_load_acquire(&public_sp->top);
+    int64_t size = b - t;
+    if (size >= GC_PUBLIC_MARK_SP_SZ - 1)
+        return 0;
+    jl_atomic_store_relaxed(
+        (_Atomic(jl_task_t *) *)&public_sp->pc_start[b % GC_PUBLIC_MARK_SP_SZ], pc);
+    jl_fence_release();
+    if (pm == inc || pm == inc_pc_only)
+        jl_atomic_store_relaxed(&public_sp->bottom, b + 1);
+    return 1;
 }
 
 
@@ -1709,14 +1711,17 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
                                       void *pc, void *data, size_t data_size, jl_gc_push_mode_t pm) JL_NOTSAFEPOINT
 {
     assert(data_size <= sizeof(jl_gc_mark_data_t));
-    jl_gc_mark_sp_t *public_sp = &gc_cache->public_sp.sp;
-    if (public_sp->pc < public_sp->pc_end) { 
+    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+    if (gc_cache->using_public_sp &&
+        gc_public_mark_stack_push(public_sp, pc, pm)) { 
         #ifdef GC_WS_DEBUG
             fprintf(stderr, "pushing into global-stack\n");
         #endif
-        gc_public_mark_stack_push(public_sp, pc, data, data_size, pm);
+        memcpy(public_sp->data, data, data_size);
+        if (pm == inc || pm == inc_data_only)
+            public_sp->data = (jl_gc_mark_data_t *)((char*)public_sp->data + data_size);
         return;
-    } 
+    }
     #ifdef GC_WS_DEBUG
         fprintf(stderr, "pushing into local-stack\n");
     #endif
@@ -2213,8 +2218,8 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     }
 
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
-    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-    
+    void **pc = NULL;   
+ 
     jl_value_t *new_obj = NULL;
     uintptr_t tag = 0;
     uint8_t bits = 0;
@@ -2237,22 +2242,10 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     uint16_t *obj16_begin;
     uint16_t *obj16_end;
 
-pop: {  
-        if (sp.pc != sp.pc_start) {
-            #ifdef GC_WS_DEBUG
-                fprintf(stderr, "popping pc from local-stack\n");
-            #endif
-            sp.pc--;
-            gc_mark_jmp(*sp.pc);
-        } 
-        else if (public_sp->sp.pc != public_sp->sp.pc_start) {
-            gc_transition_to_public_sp(gc_cache);
-            #ifdef GC_WS_DEBUG
-                fprintf(stderr, "popping pc from global-stack\n");
-            #endif
-            public_sp->sp.pc--;
-            gc_mark_jmp(*public_sp->sp.pc);
-        }
+pop: {
+        pc = gc_pop_pc(gc_cache, &sp);
+        if (pc)
+            gc_mark_jmp(*pc);
         return;
     }
 
@@ -3460,11 +3453,10 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     gc_cache->data_stack = (jl_gc_mark_data_t *)malloc_s(init_size * sizeof(jl_gc_mark_data_t));
     
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-    jl_gc_ws_offset_t ws_offset = {0, 0};
-    public_sp->ws_offset = ws_offset;
-    public_sp->sp.pc = public_sp->sp.pc_start = (void**)malloc_s(init_size * sizeof(void*));
-    public_sp->sp.pc_end = public_sp->sp.pc_start + init_size;
-    public_sp->sp.data = (jl_gc_mark_data_t *)malloc_s(init_size * sizeof(jl_gc_mark_data_t));
+    public_sp->top = 0;
+    public_sp->bottom = 0;
+    public_sp->pc_start = (void**)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(void*));
+    public_sp->data = (jl_gc_mark_data_t *)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(jl_gc_mark_data_t));
     gc_cache->using_public_sp = 1;    
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
