@@ -32,7 +32,7 @@ extern "C" {
 #define GC_PAGE_LG2 14 // log2(size of a page)
 #define GC_PAGE_SZ (1 << GC_PAGE_LG2) // 16k
 #define GC_PAGE_OFFSET (JL_HEAP_ALIGNMENT - (sizeof(jl_taggedvalue_t) % JL_HEAP_ALIGNMENT))
-#define GC_WS_DEBUG
+// #define GC_WS_DEBUG
 #define GC_PUBLIC_MARK_SP_SZ 1024
 
 #define jl_malloc_tag ((void*)0xdeadaa01)
@@ -220,28 +220,37 @@ STATIC_INLINE void gc_transition_to_private_sp(jl_gc_mark_cache_t *gc_cache) {
 
 STATIC_INLINE void *gc_pop_pc(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
 {
-    if (gc_cache->using_public_sp) {
-        jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-        size_t b = jl_atomic_load_relaxed(&public_sp->bottom) - 1;
-        jl_atomic_store_relaxed(&public_sp->bottom, b);
-        jl_fence();
-        size_t t = jl_atomic_load_relaxed(&public_sp->top);
-        int64_t size = b - t;
-        if (size < 0) {
-            jl_atomic_store_relaxed(&public_sp->bottom, t);
-            return NULL;
-        }
-        void *pc = jl_atomic_load_relaxed(
-            (_Atomic(void *) *)&public_sp->pc_start[b % GC_PUBLIC_MARK_SP_SZ]);
-        if (size > 0)
-            return pc;
-        if (!jl_atomic_cmpswap(&public_sp->top, &t, t + 1))
-            pc = NULL;
-        jl_atomic_store_relaxed(&public_sp->bottom, b + 1);
-        return pc;   
+    if (sp->pc != sp->pc_start) {
+        #ifdef GC_WS_DEBUG
+            fprintf(stderr, "popped pc from local-stack\n");
+        #endif
+        sp->pc--;
+        return *sp->pc;
     }
-    sp->pc--;
-    return *sp->pc;
+    #ifdef GC_WS_DEBUG
+        fprintf(stderr, "popped pc from global-stack\n");
+    #endif
+    gc_transition_to_public_sp(gc_cache);   
+    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+    size_t b = jl_atomic_load_relaxed(&public_sp->bottom) - 1;
+    jl_atomic_store_relaxed(&public_sp->bottom, b);
+    jl_fence();
+    size_t t = jl_atomic_load_relaxed(&public_sp->top);
+    void *pc;
+    if (b >= t - 1) {
+        pc = jl_atomic_load_relaxed(
+             (_Atomic(void *) *)&public_sp->pc_start[b % GC_PUBLIC_MARK_SP_SZ]);
+        if (b == t - 1) {
+            if (!jl_atomic_cmpswap(&public_sp->top, &t, t + 1))
+                pc = (void*)_GC_MARK_L_MAX;
+            jl_atomic_store_relaxed(&public_sp->bottom, b + 1);
+        }
+    }
+    else {
+        pc = (void*)_GC_MARK_L_MAX;
+        jl_atomic_store_relaxed(&public_sp->bottom, b + 1);
+    }
+    return pc;
 }
 
 // Pop a data struct from the mark data stack (i.e. decrease the stack pointer)
@@ -254,8 +263,8 @@ STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp
             fprintf(stderr, "popped from global-stack\n");
         #endif 
         jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-        jl_gc_mark_data_t *data = public_sp->data;
-        public_sp->data = (jl_gc_mark_data_t *)((char*)data - size);
+        jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)((char*)public_sp->data - size);
+        public_sp->data = data;
         return data;
     }
     #ifdef GC_WS_DEBUG
@@ -293,8 +302,8 @@ STATIC_INLINE void *gc_repush_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark
         #endif
         jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
         jl_atomic_fetch_add(&public_sp->bottom, 1);
-        jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)((char*)public_sp->data + size);
-        public_sp->data = data;
+        jl_gc_mark_data_t *data = public_sp->data;
+        public_sp->data = (jl_gc_mark_data_t *)((char*)public_sp->data + size);
         return data;
     } 
     #ifdef GC_WS_DEBUG
@@ -306,6 +315,13 @@ STATIC_INLINE void *gc_repush_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark
     return data;
 }
 #define gc_repush_markdata(gc_cache, sp, type) ((type*)gc_repush_markdata_(gc_cache, sp, sizeof(type)))
+
+typedef enum {
+    no_inc,
+    inc,
+    inc_pc_only,
+    inc_data_only
+} jl_gc_push_mode_t;
 
 // layout for big (>2k) objects
 
