@@ -232,24 +232,36 @@ STATIC_INLINE void *gc_pop_pc(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
     #endif
     gc_transition_to_public_sp(gc_cache);   
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-    size_t b = jl_atomic_load_relaxed(&public_sp->bottom) - 1;
-    jl_atomic_store_relaxed(&public_sp->bottom, b);
+    
+    jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
+    int b = bottom.pc_offset - 1;
+    jl_gc_ws_offset_t new_bottom = {b, bottom.data_offset};
+    jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
     jl_fence();
-    size_t t = jl_atomic_load_relaxed(&public_sp->top);
+    
+    jl_gc_ws_offset_t top = jl_atomic_load_relaxed(&public_sp->top);
+    int t = top.pc_offset;
+    
     void *pc;
     if (b >= t - 1) {
         pc = jl_atomic_load_relaxed(
              (_Atomic(void *) *)&public_sp->pc_start[b % GC_PUBLIC_MARK_SP_SZ]);
         if (b == t - 1) {
-            if (!jl_atomic_cmpswap(&public_sp->top, &t, t + 1))
-                pc = (void*)_GC_MARK_L_MAX;
-            jl_atomic_store_relaxed(&public_sp->bottom, b + 1);
+            jl_gc_ws_offset_t new_top = jl_atomic_load_acquire(&public_sp->top);
+            if (new_top.pc_offset != top.pc_offset ||
+                new_top.data_offset != top.data_offset) {
+               pc = (void*)_GC_MARK_L_MAX;
+            }
+            jl_atomic_store_relaxed(&public_sp->bottom, bottom);
         }
     }
     else {
         pc = (void*)_GC_MARK_L_MAX;
-        jl_atomic_store_relaxed(&public_sp->bottom, b + 1);
+        jl_atomic_store_relaxed(&public_sp->bottom, bottom);
     }
+    
+    if (pc == (void*)_GC_MARK_L_MAX)
+        fprintf(stderr, "bottom.data_offset: %d\n", bottom.data_offset);
     return pc;
 }
 
@@ -263,8 +275,10 @@ STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp
             fprintf(stderr, "popped from global-stack\n");
         #endif 
         jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-        jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)((char*)public_sp->data - size);
-        public_sp->data = data;
+        jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);       
+        jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)((char*)public_sp->data_start + bottom.data_offset - size);
+        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset, bottom.data_offset - size};
+        jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
         return data;
     }
     #ifdef GC_WS_DEBUG
@@ -283,7 +297,8 @@ STATIC_INLINE void *gc_bottom_markdata(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_
             fprintf(stderr, "getting bottom of global-stack\n");
         #endif
         jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-        return public_sp->data;
+        jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
+        return (char*)public_sp->data_start + bottom.data_offset;
     } 
     #ifdef GC_WS_DEBUG
         fprintf(stderr, "getting bottom of local-stack\n");
@@ -301,10 +316,12 @@ STATIC_INLINE void *gc_repush_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark
             fprintf(stderr, "repushed into global-stack\n");
         #endif
         jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-        jl_atomic_fetch_add(&public_sp->bottom, 1);
-        jl_gc_mark_data_t *data = public_sp->data;
-        public_sp->data = (jl_gc_mark_data_t *)((char*)public_sp->data + size);
-        return data;
+        jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
+        
+        char *old_data = (char*)public_sp->data_start + bottom.data_offset;
+        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset + 1, bottom.data_offset + size};
+        jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
+        return old_data;
     } 
     #ifdef GC_WS_DEBUG
         fprintf(stderr, "repushed into local-stack\n");

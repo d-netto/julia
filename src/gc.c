@@ -1683,18 +1683,29 @@ static void NOINLINE gc_mark_stack_resize(jl_gc_mark_cache_t *gc_cache, jl_gc_ma
 }
 
 STATIC_INLINE int gc_public_mark_stack_push(jl_gc_public_mark_sp_t *public_sp, void *pc,
-                                            jl_gc_push_mode_t push_mode) JL_NOTSAFEPOINT
+                                            void *data, size_t data_size, jl_gc_push_mode_t push_mode) JL_NOTSAFEPOINT
 {
-    size_t b = jl_atomic_load_relaxed(&public_sp->bottom);
-    size_t t = jl_atomic_load_acquire(&public_sp->top);
-    int64_t size = b - t;
+    jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
+    jl_gc_ws_offset_t top = jl_atomic_load_acquire(&public_sp->top);
+    int64_t size = bottom.pc_offset - top.pc_offset;
     if (size >= GC_PUBLIC_MARK_SP_SZ)
-        return 0;
+        return 0;   
+    if (push_mode == inc) {
+        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset + 1, bottom.data_offset + data_size};
+        jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
+    }
+    else if (push_mode == inc_pc_only) {
+        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset + 1, bottom.data_offset};
+        jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
+    }
+    else if (push_mode == inc_data_only) {
+        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset, bottom.data_offset + data_size};
+        jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
+    } 
     jl_atomic_store_relaxed(
-        (_Atomic(void *) *)&public_sp->pc_start[b % GC_PUBLIC_MARK_SP_SZ], pc);
+        (_Atomic(void *) *)&public_sp->pc_start[bottom.pc_offset % GC_PUBLIC_MARK_SP_SZ], pc);
+    memcpy((char*)public_sp->data_start + bottom.data_offset, data, data_size);
     jl_fence_release();
-    if (push_mode == inc || push_mode == inc_pc_only)
-        jl_atomic_store_relaxed(&public_sp->bottom, b + 1);
     return 1;
 }
 
@@ -1704,13 +1715,10 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
     assert(data_size <= sizeof(jl_gc_mark_data_t));
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
     if (gc_cache->using_public_sp &&
-        gc_public_mark_stack_push(public_sp, pc, push_mode)) { 
+        gc_public_mark_stack_push(public_sp, pc, data, data_size, push_mode)) { 
         #ifdef GC_WS_DEBUG
             fprintf(stderr, "pushing into global-stack\n");
         #endif
-        memcpy(public_sp->data, data, data_size);
-        if (push_mode == inc || push_mode == inc_data_only)
-            public_sp->data = (jl_gc_mark_data_t *)((char*)public_sp->data + data_size);
         return;
     }
     #ifdef GC_WS_DEBUG
@@ -3447,10 +3455,12 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     gc_cache->data_stack = (jl_gc_mark_data_t *)malloc_s(init_size * sizeof(jl_gc_mark_data_t));
     
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-    public_sp->top = 0;
-    public_sp->bottom = 0;
+    jl_gc_ws_offset_t initial_offset = {0, 0};
+    
+    public_sp->top = initial_offset;
+    public_sp->bottom = initial_offset;
     public_sp->pc_start = (void**)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(void*));
-    public_sp->data = (jl_gc_mark_data_t *)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(jl_gc_mark_data_t));
+    public_sp->data_start = (jl_gc_mark_data_t *)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(jl_gc_mark_data_t));
     gc_cache->using_public_sp = 1;    
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
