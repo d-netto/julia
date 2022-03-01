@@ -1702,19 +1702,17 @@ STATIC_INLINE void *gc_pop_pc(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
     jl_gc_ws_offset_t new_bottom = {b, bottom.data_offset};
     jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
     jl_fence();
-    jl_gc_ws_offset_t top = jl_atomic_load_relaxed(&public_sp->top);
-    int t = top.pc_offset;
+    int top = jl_atomic_load_relaxed(&public_sp->top);
     void *pc;
-    if (b >= t) {
+    if (b >= top) {
         pc = jl_atomic_load_relaxed(
              (_Atomic(void *) *)&public_sp->pc_start[b % GC_PUBLIC_MARK_SP_SZ]);
-        //if (b == t) {
-        //    jl_gc_ws_offset_t new_top = {t + 1, top.data_offset};
-        //    if (!jl_atomic_cmpswap(&public_sp->top, &top, new_top)) {
-        //        pc = (void*)_GC_MARK_L_MAX;
-        //    }
-        //    jl_atomic_store_relaxed(&public_sp->bottom, bottom);
-        //}
+        if (b == top) {
+            //if (!jl_atomic_cmpswap(&public_sp->top, &top, top + 1)) {
+            //    pc = (void*)_GC_MARK_L_MAX;
+            //}
+            //jl_atomic_store_relaxed(&public_sp->bottom, bottom);
+        }
     }
     else {
         pc = (void*)_GC_MARK_L_MAX;
@@ -1734,8 +1732,8 @@ STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp
         #endif 
         jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
         jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);       
-        jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)((char*)public_sp->data_start + bottom.data_offset - size);
-        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset, bottom.data_offset - size};
+        jl_gc_mark_data_t *data = &public_sp->data_start[(bottom.data_offset - 1) % GC_PUBLIC_MARK_SP_SZ];
+        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset, bottom.data_offset - 1};
         jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
         return data;
     }
@@ -1752,26 +1750,28 @@ STATIC_INLINE int gc_public_mark_stack_push(jl_gc_public_mark_sp_t *public_sp, v
                                             void *data, size_t data_size, jl_gc_push_mode_t push_mode) JL_NOTSAFEPOINT
 {
     jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
-    jl_gc_ws_offset_t top = jl_atomic_load_acquire(&public_sp->top);
-    int64_t size = bottom.pc_offset - top.pc_offset;
+    int top = jl_atomic_load_acquire(&public_sp->top);
+    int64_t size = bottom.pc_offset - top;
     if (size >= GC_PUBLIC_MARK_SP_SZ)
-        return 0;   
+        return 0;
+    jl_atomic_store_relaxed(
+        (_Atomic(void *) *)&public_sp->pc_start[bottom.pc_offset % GC_PUBLIC_MARK_SP_SZ], pc);
+    memcpy(&public_sp->data_start[bottom.data_offset % GC_PUBLIC_MARK_SP_SZ], data, data_size);
+    jl_fence_release();
+    jl_gc_ws_offset_t new_bottom = bottom;
     if (push_mode == inc) {
-        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset + 1, bottom.data_offset + data_size};
+        new_bottom.pc_offset++;
+        new_bottom.data_offset++;
         jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
     }
     else if (push_mode == inc_pc_only) {
-        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset + 1, bottom.data_offset};
+        new_bottom.pc_offset++;
         jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
     }
     else if (push_mode == inc_data_only) {
-        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset, bottom.data_offset + data_size};
+        new_bottom.data_offset++;
         jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
     } 
-    jl_atomic_store_relaxed(
-        (_Atomic(void *) *)&public_sp->pc_start[bottom.pc_offset % GC_PUBLIC_MARK_SP_SZ], pc);
-    memcpy((char*)public_sp->data_start + bottom.data_offset, data, data_size);
-    jl_fence_release();
     return 1;
 }
 
@@ -1804,26 +1804,21 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
 }
 
 STATIC_INLINE int gc_mark_stack_steal(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_cache_t *gc_cache2) {
-    jl_gc_public_mark_sp_t *public_sp = &gc_cache2->public_sp;
-    jl_gc_ws_offset_t old_top = jl_atomic_load_acquire(&public_sp->top);
+    jl_gc_public_mark_sp_t *public_sp2 = &gc_cache2->public_sp;
+    int top = jl_atomic_load_acquire(&public_sp2->top);
     jl_fence();
-    jl_gc_ws_offset_t bottom = jl_atomic_load_acquire(&public_sp->bottom);
-    int size = bottom.pc_offset - old_top.pc_offset;
-    if (size <= 2)
+    jl_gc_ws_offset_t bottom = jl_atomic_load_acquire(&public_sp2->bottom);
+    int size = bottom.pc_offset - top;
+    if (size <= 10)
         return 0;
-    void *stolen_pc = jl_atomic_load_relaxed(
-        (_Atomic(void *) *)&public_sp->pc_start[old_top.pc_offset % GC_PUBLIC_MARK_SP_SZ]);
-    size_t stolen_data_size = gc_mark_label_sizes[(int)(uintptr_t)stolen_pc];
-    jl_gc_ws_offset_t new_top = {old_top.pc_offset + 1, old_top.data_offset + stolen_data_size};
+    void *pc = jl_atomic_load_relaxed(
+        (_Atomic(void *) *)&public_sp2->pc_start[top % GC_PUBLIC_MARK_SP_SZ]);
+    size_t data_size = gc_mark_label_sizes[(int)(uintptr_t)pc];
     // Race at the bottom of victim's public mark-stack: abort stealing
-    if (!jl_atomic_cmpswap(&public_sp->top, &old_top, new_top))
+    if (!jl_atomic_cmpswap(&public_sp2->top, &top, top + 1))
         return 0;
-    gc_mark_stack_push(gc_cache, NULL, stolen_pc, (char*)public_sp->data_start + old_top.data_offset, 
-                       stolen_data_size, inc);
-    #ifdef GC_WS_DEBUG
-        fprintf(stderr, "after stolen...new_top = {%d, %d}\n", new_top.pc_offset, new_top.data_offset);
-    #endif
-    return 1;
+    jl_gc_mark_data_t *data = &public_sp2->data_start[top % GC_PUBLIC_MARK_SP_SZ];
+    return gc_public_mark_stack_push(&gc_cache->public_sp, pc, data, data_size, inc);
 }
 
 // Check if the reference is non-NULL and atomically set the mark bit.
@@ -3559,7 +3554,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
     jl_gc_ws_offset_t initial_offset = {0, 0};
     
-    public_sp->top = initial_offset;
+    public_sp->top = 0;
     public_sp->bottom = initial_offset;
     public_sp->pc_start = (void**)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(void*));
     public_sp->data_start = (jl_gc_mark_data_t *)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(jl_gc_mark_data_t));

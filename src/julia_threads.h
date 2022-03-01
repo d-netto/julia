@@ -185,7 +185,7 @@ typedef struct {
 } jl_gc_ws_offset_t;
 
 typedef struct {
-	_Atomic(jl_gc_ws_offset_t) top;
+	_Atomic(int) top;
     _Atomic(jl_gc_ws_offset_t) bottom;
     void **pc_start;
     jl_gc_mark_data_t *data_start;
@@ -208,7 +208,7 @@ typedef struct {
     // the lists (the mark bit cannot be flipped to `0` without sweeping)
     void *big_obj[1024];    
     uint8_t using_public_sp; 
-    jl_gc_public_mark_sp_t public_sp;
+    jl_gc_public_mark_sp_t public_sp; 
     void **pc_stack;
     void **pc_stack_end;
     jl_gc_mark_data_t *data_stack;

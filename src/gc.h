@@ -32,8 +32,8 @@ extern "C" {
 #define GC_PAGE_LG2 14 // log2(size of a page)
 #define GC_PAGE_SZ (1 << GC_PAGE_LG2) // 16k
 #define GC_PAGE_OFFSET (JL_HEAP_ALIGNMENT - (sizeof(jl_taggedvalue_t) % JL_HEAP_ALIGNMENT))
-// #define GC_WS_DEBUG
-#define GC_PUBLIC_MARK_SP_SZ 1024
+//#define GC_WS_DEBUG
+#define GC_PUBLIC_MARK_SP_SZ (1 << 17)
 
 #define jl_malloc_tag ((void*)0xdeadaa01)
 #define jl_singleton_tag ((void*)0xdeadaa02)
@@ -226,7 +226,7 @@ STATIC_INLINE void *gc_bottom_markdata(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_
         #endif
         jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
         jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
-        return (char*)public_sp->data_start + bottom.data_offset;
+        return &public_sp->data_start[bottom.data_offset % GC_PUBLIC_MARK_SP_SZ];
     } 
     #ifdef GC_WS_DEBUG
         fprintf(stderr, "getting bottom of local-stack\n");
@@ -245,9 +245,8 @@ STATIC_INLINE void *gc_repush_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark
         #endif
         jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
         jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
-        
-        char *old_data = (char*)public_sp->data_start + bottom.data_offset;
-        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset + 1, bottom.data_offset + size};
+        jl_gc_mark_data_t *old_data = &public_sp->data_start[bottom.data_offset % GC_PUBLIC_MARK_SP_SZ];
+        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset + 1, bottom.data_offset + 1};
         jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
         return old_data;
     } 
