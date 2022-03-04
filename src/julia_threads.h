@@ -185,7 +185,8 @@ typedef struct {
 } jl_gc_ws_offset_t;
 
 typedef struct {
-	_Atomic(int) top;
+	int dirty;
+    _Atomic(int) top;
     _Atomic(jl_gc_ws_offset_t) bottom;
     void **pc_start;
     jl_gc_mark_data_t *data_start;
