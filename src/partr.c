@@ -534,9 +534,11 @@ JL_DLLEXPORT jl_task_t *jl_task_get_next(jl_value_t *trypoptask, jl_value_t *q)
             JULIA_DEBUG_SLEEPWAKE( ptls->sleep_enter = cycleclock() );
             int8_t gc_state = jl_gc_safe_enter(ptls);
             uv_mutex_lock(&sleep_locks[ptls->tid]);
+            int recruited = 0;
             while (may_sleep(ptls)) {
                 uv_cond_wait(&wake_signals[ptls->tid], &sleep_locks[ptls->tid]);
-                // TODO: help with gc work here, if applicable
+                if (!recruited)
+                    recruited = jl_gc_try_recruit(ptls);
             }
             assert(jl_atomic_load_relaxed(&ptls->sleep_check_state) == not_sleeping);
             uv_mutex_unlock(&sleep_locks[ptls->tid]);

@@ -2276,7 +2276,9 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
 
         return;
     }
-    
+
+    int num_pops = 0;   
+ 
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
     void *pc = NULL;   
  
@@ -2305,9 +2307,10 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
 pop: {
         pc = gc_pop_pc(gc_cache, &sp);
         if (GC_MARK_L_marked_obj <= (uint64_t)pc && (uint64_t)pc < _GC_MARK_L_MAX) {
+            num_pops++;
             gc_mark_jmp(pc);
         }
-        for (int i = 0; i < jl_n_threads * jl_n_threads; i++) {
+        for (int i = 0; i < 50 * jl_n_threads * jl_n_threads; i++) {
             uint64_t victim = rand() % jl_n_threads;
             if (victim == ptls->tid)
                 continue;
