@@ -221,16 +221,10 @@ STATIC_INLINE void gc_transition_to_private_sp(jl_gc_mark_cache_t *gc_cache) {
 STATIC_INLINE void *gc_bottom_markdata(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
 {
     if (gc_cache->using_public_sp) { 
-        #ifdef GC_WS_DEBUG
-            fprintf(stderr, "getting bottom of global-stack\n");
-        #endif
         jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-        jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
+        jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
         return &public_sp->data_start[bottom.data_offset % GC_PUBLIC_MARK_SP_SZ];
     } 
-    #ifdef GC_WS_DEBUG
-        fprintf(stderr, "getting bottom of local-stack\n");
-    #endif
     return sp->data;
 }
 
@@ -240,19 +234,13 @@ STATIC_INLINE void *gc_bottom_markdata(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_
 STATIC_INLINE void *gc_repush_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp, size_t size) JL_NOTSAFEPOINT
 {
     if (gc_cache->using_public_sp) {
-        #ifdef GC_WS_DEBUG
-            fprintf(stderr, "repushed into global-stack\n");
-        #endif
         jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-        jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
+        jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
         jl_gc_mark_data_t *old_data = &public_sp->data_start[bottom.data_offset % GC_PUBLIC_MARK_SP_SZ];
-        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset + 1, bottom.data_offset + 1};
+        jl_gc_ws_bottom_t new_bottom = {bottom.pc_offset + 1, bottom.data_offset + 1};
         jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
         return old_data;
     } 
-    #ifdef GC_WS_DEBUG
-        fprintf(stderr, "repushed into local-stack\n");
-    #endif
     jl_gc_mark_data_t *data = sp->data;
     sp->pc++;
     sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + size);

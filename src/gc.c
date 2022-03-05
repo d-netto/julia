@@ -1686,32 +1686,24 @@ static void NOINLINE gc_mark_stack_resize(jl_gc_mark_cache_t *gc_cache, jl_gc_ma
 STATIC_INLINE void *gc_pop_pc(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
 {
     if (sp->pc != sp->pc_start) {
-        #ifdef GC_WS_DEBUG
-            fprintf(stderr, "popped pc from local-stack\n");
-        #endif
         sp->pc--;
         return *sp->pc;
     }
-    #ifdef GC_WS_DEBUG
-        fprintf(stderr, "popped pc from global-stack\n");
-    #endif
     gc_transition_to_public_sp(gc_cache);   
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;    
-    jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
+    jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
     int b = bottom.pc_offset - 1;
-    jl_gc_ws_offset_t new_bottom = {b, bottom.data_offset};
+    jl_gc_ws_bottom_t new_bottom = {b, bottom.data_offset};
     jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
     jl_fence();
-    int top = jl_atomic_load_relaxed(&public_sp->top);
+    jl_gc_ws_top_t top = jl_atomic_load_relaxed(&public_sp->top);
     void *pc;
-    if (b >= top) {
+    if (b >= top.offset) {
         pc = jl_atomic_load_relaxed(
              (_Atomic(void *) *)&public_sp->pc_start[b % GC_PUBLIC_MARK_SP_SZ]);
-        if (b == top) {
-            if (jl_atomic_cmpswap(&public_sp->top, &top, top + 1)) {
-                public_sp->dirty = 1;
-            } 
-            else {
+        if (__unlikely(b == top.offset)) {
+            jl_gc_ws_top_t new_top = {top.offset, top.version + 1};
+            if (!jl_atomic_cmpswap(&public_sp->top, &top, new_top)) {
                 pc = (void*)_GC_MARK_L_MAX;
                 jl_atomic_store_relaxed(&public_sp->bottom, bottom);
             }
@@ -1730,23 +1722,13 @@ STATIC_INLINE void *gc_pop_pc(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
 STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp, size_t size)
 {
     if (gc_cache->using_public_sp) { 
-        #ifdef GC_WS_DEBUG
-            fprintf(stderr, "popped from global-stack\n");
-        #endif 
         jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-        jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);       
+        jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);       
         jl_gc_mark_data_t *data = &public_sp->data_start[(bottom.data_offset - 1) % GC_PUBLIC_MARK_SP_SZ];
-        jl_gc_ws_offset_t new_bottom = {bottom.pc_offset, bottom.data_offset - 1};
+        jl_gc_ws_bottom_t new_bottom = {bottom.pc_offset, bottom.data_offset - 1};
         jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
-        if (public_sp->dirty) {
-            public_sp->dirty = 0;
-            jl_atomic_fetch_add(&public_sp->top, -1);
-        }
         return data;
     }
-    #ifdef GC_WS_DEBUG
-        fprintf(stderr, "popped from local-stack\n");
-    #endif 
     jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)(((char*)sp->data) - size);
     sp->data = data;
     return data;
@@ -1756,16 +1738,16 @@ STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp
 STATIC_INLINE int gc_public_mark_stack_push(jl_gc_public_mark_sp_t *public_sp, void *pc,
                                             void *data, size_t data_size, jl_gc_push_mode_t pm) JL_NOTSAFEPOINT
 {
-    jl_gc_ws_offset_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
-    int top = jl_atomic_load_acquire(&public_sp->top);
-    int64_t size = bottom.pc_offset - top;
-    if (size >= GC_PUBLIC_MARK_SP_SZ)
+    jl_gc_ws_bottom_t bottom = jl_atomic_load_acquire(&public_sp->bottom);
+    jl_gc_ws_top_t top = jl_atomic_load_acquire(&public_sp->top);
+    int64_t size = bottom.pc_offset - top.offset;
+    if (__unlikely(size >= GC_PUBLIC_MARK_SP_SZ))
         return 0;
     jl_atomic_store_relaxed(
         (_Atomic(void *) *)&public_sp->pc_start[bottom.pc_offset % GC_PUBLIC_MARK_SP_SZ], pc);
     memcpy(&public_sp->data_start[bottom.data_offset % GC_PUBLIC_MARK_SP_SZ], data, data_size);
     jl_fence_release();
-    jl_gc_ws_offset_t new_bottom = bottom;
+    jl_gc_ws_bottom_t new_bottom = bottom;
     if (pm == inc) {
         new_bottom.pc_offset++;
     }
@@ -1783,14 +1765,8 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
     if (gc_cache->using_public_sp &&
         gc_public_mark_stack_push(public_sp, pc, data, data_size, pm)) { 
-        #ifdef GC_WS_DEBUG
-            fprintf(stderr, "%d is pushing into global-stack\n", jl_current_task->tid);
-        #endif
         return;
     }
-    #ifdef GC_WS_DEBUG
-        fprintf(stderr, "%d is pushing into local-stack\n", jl_current_task->tid);
-    #endif
     gc_transition_to_private_sp(gc_cache);
     if (__unlikely(sp->pc == sp->pc_end))
         gc_mark_stack_resize(gc_cache, sp);
@@ -1807,19 +1783,17 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
 STATIC_INLINE int gc_mark_stack_steal(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_cache_t *gc_cache2) 
 {
     jl_gc_public_mark_sp_t *public_sp2 = &gc_cache2->public_sp;
-    int top = jl_atomic_load_acquire(&public_sp2->top);
+    jl_gc_ws_top_t top = jl_atomic_load_acquire(&public_sp2->top);
     jl_fence();
-    jl_gc_ws_offset_t bottom = jl_atomic_load_acquire(&public_sp2->bottom);
-    int size = bottom.pc_offset - top;
-    if (size <= 1)
-        return 0;
-    // Race at the bottom of victim's public mark-stack: abort stealing
-    if (!jl_atomic_cmpswap(&public_sp2->top, &top, top + 1))
+    jl_gc_ws_bottom_t bottom = jl_atomic_load_acquire(&public_sp2->bottom);
+    int size = bottom.pc_offset - top.offset;
+    jl_gc_ws_top_t new_top = {top.offset + 1, top.version + 1};
+    if (size <= 0 || !jl_atomic_cmpswap(&public_sp2->top, &top, new_top))
         return 0;
     void *pc = jl_atomic_load_relaxed(
-        (_Atomic(void *) *)&public_sp2->pc_start[top % GC_PUBLIC_MARK_SP_SZ]);
+        (_Atomic(void *) *)&public_sp2->pc_start[top.offset % GC_PUBLIC_MARK_SP_SZ]);
     size_t data_size = gc_mark_label_sizes[(int)(uintptr_t)pc];
-    jl_gc_mark_data_t *data = &public_sp2->data_start[top % GC_PUBLIC_MARK_SP_SZ];
+    jl_gc_mark_data_t *data = &public_sp2->data_start[top.offset % GC_PUBLIC_MARK_SP_SZ];
     return gc_public_mark_stack_push(&gc_cache->public_sp, pc, data, data_size, inc);
 }
 
@@ -2302,7 +2276,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
 
         return;
     }
-
+    
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
     void *pc = NULL;   
  
@@ -2330,23 +2304,17 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
 
 pop: {
         pc = gc_pop_pc(gc_cache, &sp);
-        if (GC_MARK_L_marked_obj <= (uint64_t)pc && (uint64_t)pc < _GC_MARK_L_MAX)
+        if (GC_MARK_L_marked_obj <= (uint64_t)pc && (uint64_t)pc < _GC_MARK_L_MAX) {
             gc_mark_jmp(pc);
-        for (int i = 0; i < jl_n_threads; i++) {
-            // TODO(netto): use a proper cong_unbias
+        }
+        for (int i = 0; i < jl_n_threads * jl_n_threads; i++) {
             uint64_t victim = rand() % jl_n_threads;
             if (victim == ptls->tid)
                 continue;
             if (gc_mark_stack_steal(gc_cache, &jl_all_tls_states[victim]->gc_cache)) {
-                #ifdef GC_WS_DEBUG
-                    fprintf(stderr, "%d has stolen from %ld\n", ptls->tid, victim);
-                #endif
                 goto pop;
             }
         }
-        #ifdef GC_WS_DEBUG
-            fprintf(stderr, "%d mark-loop done\n", ptls->tid);
-        #endif
         return;
     }
 
@@ -3199,6 +3167,7 @@ static void gc_mark_loop_recruited(jl_ptls_t ptls)
 {
     jl_gc_mark_sp_t sp;
     gc_mark_sp_init(&ptls->gc_cache, &sp);
+    jl_gc_queue_thread_local(&ptls->gc_cache, &sp, ptls);
     gc_mark_loop(ptls, sp);
 }
 
@@ -3223,9 +3192,9 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
         // 2.1. mark every object in the `last_remsets` and `rem_binding`
         jl_gc_queue_remset(gc_cache, &sp, ptls2);
-        // 2.2. mark every thread local root
+        // 2.2. thread local root
         jl_gc_queue_thread_local(gc_cache, &sp, ptls2);
-        // 2.3. mark any managed objects in the backtrace buffer
+        // 2.3. managed objects in the backtrace buffer
         jl_gc_queue_bt_buf(gc_cache, &sp, ptls2);
     }
 
@@ -3554,11 +3523,12 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     gc_cache->data_stack = (jl_gc_mark_data_t *)malloc_s(init_size * sizeof(jl_gc_mark_data_t));
     
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-    jl_gc_ws_offset_t initial_offset = {0, 0};
+    
+    jl_gc_ws_top_t initial_top = {0, 0};
+    jl_gc_ws_bottom_t initial_bottom = {0, 0};
    
-    public_sp->dirty = 0; 
-    public_sp->top = 0;
-    public_sp->bottom = initial_offset;
+    public_sp->top = initial_top;
+    public_sp->bottom = initial_bottom;
     public_sp->pc_start = (void**)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(void*));
     public_sp->data_start = (jl_gc_mark_data_t *)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(jl_gc_mark_data_t));
     gc_cache->using_public_sp = 1;    
