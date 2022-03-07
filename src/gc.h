@@ -32,7 +32,7 @@ extern "C" {
 #define GC_PAGE_LG2 14 // log2(size of a page)
 #define GC_PAGE_SZ (1 << GC_PAGE_LG2) // 16k
 #define GC_PAGE_OFFSET (JL_HEAP_ALIGNMENT - (sizeof(jl_taggedvalue_t) % JL_HEAP_ALIGNMENT))
-//#define GC_WS_DEBUG
+#define GC_SP_MIN_STEAL_SZ (1 << 12)
 #define GC_PUBLIC_MARK_SP_SZ (1 << 16)
 
 #define jl_malloc_tag ((void*)0xdeadaa01)
@@ -210,22 +210,14 @@ union _jl_gc_mark_data {
     gc_mark_finlist_t finlist;
 };
 
-STATIC_INLINE void gc_transition_to_public_sp(jl_gc_mark_cache_t *gc_cache) {
-    gc_cache->using_public_sp = 1;
-}
-
-STATIC_INLINE void gc_transition_to_private_sp(jl_gc_mark_cache_t *gc_cache) {
-    gc_cache->using_public_sp = 0;
-}
-
 STATIC_INLINE void *gc_bottom_markdata(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
 {
-    if (gc_cache->using_public_sp) { 
-        jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-        jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
-        return &public_sp->data_start[bottom.data_offset % GC_PUBLIC_MARK_SP_SZ];
+    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+    if (public_sp->overflow) {
+        return sp->data; 
     } 
-    return sp->data;
+    jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
+    return &public_sp->data_start[bottom.data_offset % GC_PUBLIC_MARK_SP_SZ];
 }
 
 // Re-push a frame to the mark stack (both data and pc)
@@ -233,25 +225,24 @@ STATIC_INLINE void *gc_bottom_markdata(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_
 // Mainly useful to pause the current scanning in order to scan an new object.
 STATIC_INLINE void *gc_repush_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp, size_t size) JL_NOTSAFEPOINT
 {
-    if (gc_cache->using_public_sp) {
-        jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-        jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
-        jl_gc_mark_data_t *old_data = &public_sp->data_start[bottom.data_offset % GC_PUBLIC_MARK_SP_SZ];
-        jl_gc_ws_bottom_t new_bottom = {bottom.pc_offset + 1, bottom.data_offset + 1};
-        jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
-        return old_data;
-    } 
-    jl_gc_mark_data_t *data = sp->data;
-    sp->pc++;
-    sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + size);
-    return data;
+    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+    if (public_sp->overflow) {
+        jl_gc_mark_data_t *data = sp->data;
+        sp->pc++;
+        sp->data = (jl_gc_mark_data_t *)(((char*)sp->data) + size);
+        return data;
+    }
+    jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
+    jl_gc_mark_data_t *old_data = &public_sp->data_start[bottom.data_offset % GC_PUBLIC_MARK_SP_SZ];
+    jl_gc_ws_bottom_t new_bottom = {bottom.pc_offset + 1, bottom.data_offset + 1};
+    jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
+    return old_data;
 }
 #define gc_repush_markdata(gc_cache, sp, type) ((type*)gc_repush_markdata_(gc_cache, sp, sizeof(type)))
 
 typedef enum {
     no_inc,
     inc,
-    inc_pc_only,
     inc_data_only
 } jl_gc_push_mode_t;
 

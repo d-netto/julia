@@ -188,6 +188,8 @@ typedef struct {
 } jl_gc_ws_bottom_t;
 
 typedef struct {
+    uint8_t overflow; 
+    uint8_t enabled_stealing;
     _Atomic(jl_gc_ws_top_t) top;
     _Atomic(jl_gc_ws_bottom_t) bottom;
     void **pc_start;
@@ -210,11 +212,10 @@ typedef struct {
     // this makes sure that a single objects can only appear once in
     // the lists (the mark bit cannot be flipped to `0` without sweeping)
     void *big_obj[1024];    
-    uint8_t using_public_sp; 
-    jl_gc_public_mark_sp_t public_sp; 
     void **pc_stack;
     void **pc_stack_end;
     jl_gc_mark_data_t *data_stack;
+    jl_gc_public_mark_sp_t public_sp; 
 } jl_gc_mark_cache_t;
 
 struct _jl_bt_element_t;

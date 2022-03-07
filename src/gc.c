@@ -1683,14 +1683,13 @@ static void NOINLINE gc_mark_stack_resize(jl_gc_mark_cache_t *gc_cache, jl_gc_ma
 }
 
 
-STATIC_INLINE void *gc_pop_pc(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
+STATIC_INLINE void *gc_pop_pc(jl_gc_public_mark_sp_t *public_sp, jl_gc_mark_sp_t *sp)
 {
     if (sp->pc != sp->pc_start) {
         sp->pc--;
         return *sp->pc;
     }
-    gc_transition_to_public_sp(gc_cache);   
-    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;    
+    public_sp->overflow = 0;
     jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);
     int b = bottom.pc_offset - 1;
     jl_gc_ws_bottom_t new_bottom = {b, bottom.data_offset};
@@ -1721,16 +1720,16 @@ STATIC_INLINE void *gc_pop_pc(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
 // the stack.
 STATIC_INLINE void *gc_pop_markdata_(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp, size_t size)
 {
-    if (gc_cache->using_public_sp) { 
-        jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-        jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);       
-        jl_gc_mark_data_t *data = &public_sp->data_start[(bottom.data_offset - 1) % GC_PUBLIC_MARK_SP_SZ];
-        jl_gc_ws_bottom_t new_bottom = {bottom.pc_offset, bottom.data_offset - 1};
-        jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
+    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+    if (public_sp->overflow) {
+        jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)(((char*)sp->data) - size);
+        sp->data = data;
         return data;
     }
-    jl_gc_mark_data_t *data = (jl_gc_mark_data_t *)(((char*)sp->data) - size);
-    sp->data = data;
+    jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&public_sp->bottom);       
+    jl_gc_mark_data_t *data = &public_sp->data_start[(bottom.data_offset - 1) % GC_PUBLIC_MARK_SP_SZ];
+    jl_gc_ws_bottom_t new_bottom = {bottom.pc_offset, bottom.data_offset - 1};
+    jl_atomic_store_relaxed(&public_sp->bottom, new_bottom);
     return data;
 }
 #define gc_pop_markdata(gc_cache, sp, type) ((type*)gc_pop_markdata_(gc_cache, sp, sizeof(type)))
@@ -1741,6 +1740,8 @@ STATIC_INLINE int gc_public_mark_stack_push(jl_gc_public_mark_sp_t *public_sp, v
     jl_gc_ws_bottom_t bottom = jl_atomic_load_acquire(&public_sp->bottom);
     jl_gc_ws_top_t top = jl_atomic_load_acquire(&public_sp->top);
     int64_t size = bottom.pc_offset - top.offset;
+    if (size >= GC_SP_MIN_STEAL_SZ)
+        public_sp->enabled_stealing = 1;
     if (__unlikely(size >= GC_PUBLIC_MARK_SP_SZ))
         return 0;
     jl_atomic_store_relaxed(
@@ -1763,11 +1764,11 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
 {
     assert(data_size <= sizeof(jl_gc_mark_data_t));
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
-    if (gc_cache->using_public_sp &&
+    if (!public_sp->overflow &&
         gc_public_mark_stack_push(public_sp, pc, data, data_size, pm)) { 
         return;
     }
-    gc_transition_to_private_sp(gc_cache);
+    public_sp->overflow = 1;
     if (__unlikely(sp->pc == sp->pc_end))
         gc_mark_stack_resize(gc_cache, sp);
     *sp->pc = pc;
@@ -2141,6 +2142,40 @@ STATIC_INLINE int gc_mark_scan_obj32(jl_ptls_t ptls, jl_gc_mark_sp_t *sp, gc_mar
     return 0;
 }
 
+void jl_gc_set_recruit(jl_ptls_t ptls, void *addr)
+{
+    jl_fence();
+    if (!jl_atomic_exchange_relaxed(&jl_gc_recruiting_location, addr)) {
+        if (jl_n_threads > 1)
+            jl_wake_libuv();
+        for (int i = 0; i < jl_n_threads; i++) {
+            if (i == ptls->tid)
+                continue;
+            jl_wakeup_thread(i);
+        }
+    }
+}
+
+void jl_gc_clear_recruit(jl_ptls_t ptls)
+{
+    if (jl_atomic_exchange_relaxed(&jl_gc_recruiting_location, NULL)) {
+        for (int i = 0; i < jl_n_threads; i++) {
+            if (i == ptls->tid)
+                continue;
+            jl_ptls_t ptls2 = jl_all_tls_states[i];
+            while (jl_atomic_load_relaxed(&ptls2->gc_state) == JL_GC_STATE_PARALLEL &&
+                   jl_atomic_load_acquire(&ptls2->gc_state) == JL_GC_STATE_PARALLEL)
+                jl_cpu_pause();
+        }
+    }
+}
+
+static void gc_mark_loop_recruited(jl_ptls_t ptls)
+{
+    jl_gc_mark_sp_t sp;
+    gc_mark_sp_init(&ptls->gc_cache, &sp);
+    gc_mark_loop(ptls, sp);
+}
 
 // #if defined(__GNUC__) && !defined(_OS_EMSCRIPTEN_)
 // #  define gc_mark_laddr(name) (&&name)
@@ -2277,10 +2312,10 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
         return;
     }
 
-    int num_pops = 0;   
- 
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
-    void *pc = NULL;   
+    jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
+    uint8_t enabled_stealing = 0;
+    void *pc = (void*)_GC_MARK_L_MAX;
  
     jl_value_t *new_obj = NULL;
     uintptr_t tag = 0;
@@ -2305,12 +2340,15 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
     uint16_t *obj16_end;
 
 pop: {
-        pc = gc_pop_pc(gc_cache, &sp);
+        pc = gc_pop_pc(public_sp, &sp);
         if (GC_MARK_L_marked_obj <= (uint64_t)pc && (uint64_t)pc < _GC_MARK_L_MAX) {
-            num_pops++;
+            if (!enabled_stealing && public_sp->enabled_stealing) {
+                enabled_stealing = 1;
+                jl_gc_set_recruit(ptls, (void *)gc_mark_loop_recruited);
+            }
             gc_mark_jmp(pc);
         }
-        for (int i = 0; i < 50 * jl_n_threads * jl_n_threads; i++) {
+        for (int i = 0; i < jl_n_threads * jl_n_threads; i++) {
             uint64_t victim = rand() % jl_n_threads;
             if (victim == ptls->tid)
                 continue;
@@ -2318,6 +2356,7 @@ pop: {
                 goto pop;
             }
         }
+        public_sp->enabled_stealing = 0;
         return;
     }
 
@@ -3141,38 +3180,6 @@ static void jl_gc_queue_bt_buf(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp
 
 size_t jl_maxrss(void);
 
-void jl_gc_set_recruit(jl_ptls_t ptls, void *addr)
-{
-    jl_fence();
-    jl_atomic_store_relaxed(&jl_gc_recruiting_location, addr);
-    if (jl_n_threads > 1)
-        jl_wake_libuv();
-    for (int i = 0; i < jl_n_threads; i++) {
-        if (i == ptls->tid)
-            continue;
-        jl_wakeup_thread(i);
-    }
-}
-void jl_gc_clear_recruit(jl_ptls_t ptls)
-{
-    jl_atomic_store_relaxed(&jl_gc_recruiting_location, NULL);
-    for (int i = 0; i < jl_n_threads; i++) {
-        if (i == ptls->tid)
-            continue;
-        jl_ptls_t ptls2 = jl_all_tls_states[i];
-        while (jl_atomic_load_relaxed(&ptls2->gc_state) == JL_GC_STATE_PARALLEL &&
-               jl_atomic_load_acquire(&ptls2->gc_state) == JL_GC_STATE_PARALLEL)
-            jl_cpu_pause();
-    }
-}
-
-static void gc_mark_loop_recruited(jl_ptls_t ptls)
-{
-    jl_gc_mark_sp_t sp;
-    gc_mark_sp_init(&ptls->gc_cache, &sp);
-    jl_gc_queue_thread_local(&ptls->gc_cache, &sp, ptls);
-    gc_mark_loop(ptls, sp);
-}
 
 // Only one thread should be running in this function
 static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
@@ -3209,7 +3216,6 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
             gc_cblist_root_scanner, (collection));
         import_gc_state(ptls, &sp);
     }
-    jl_gc_set_recruit(ptls, (void *)gc_mark_loop_recruited);
     uint8_t old_state = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
     gc_mark_loop(ptls, sp);
     jl_gc_state_set(ptls, old_state, JL_GC_STATE_PARALLEL);
@@ -3530,11 +3536,12 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     jl_gc_ws_top_t initial_top = {0, 0};
     jl_gc_ws_bottom_t initial_bottom = {0, 0};
    
+    public_sp->overflow = 0;    
+    public_sp->enabled_stealing = 0;
     public_sp->top = initial_top;
     public_sp->bottom = initial_bottom;
     public_sp->pc_start = (void**)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(void*));
     public_sp->data_start = (jl_gc_mark_data_t *)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(jl_gc_mark_data_t));
-    gc_cache->using_public_sp = 1;    
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     assert(gc_num.interval == default_collect_interval);
