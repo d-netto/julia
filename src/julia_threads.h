@@ -179,18 +179,29 @@ typedef struct {
     void **pc_end; // Cached value of `gc_cache->pc_stack_end`
 } jl_gc_mark_sp_t;
 
+// Top of gc public mark queue. See comment in `gc_pop_pc` for why a version number
+// is used
 typedef struct {
     int offset, version;
 } jl_gc_ws_top_t;
 
+// Bottom of gc public mark queue. Two offsets are used because size of pc/data queues
+// may differ (TODO: this difference is at most one. Can we keep a single offset?)
 typedef struct {
     int pc_offset, data_offset;
 } jl_gc_ws_bottom_t;
 
+// Fixed size work-stealing deque used for marking in gc
 typedef struct {
-    uint8_t overflow; 
-    uint8_t enabled_stealing;
-    int ws_wait;
+    // Indicates that elements must be pushed/popped into/from the private queue
+    uint8_t overflow;
+    // Whether this queue has enough elements so that work-stealing is worth it (see
+    // comments in `gc.c`)
+    uint8_t ws_enabled;
+    // Measures how long a thread that's paused while gc is running should sleep before
+    // checking the recruitment location (exponential backoff is used to adjust this
+    // timeout depending on whether a steal succeeded/failed)
+    int ws_timeout;
     _Atomic(jl_gc_ws_top_t) top;
     _Atomic(jl_gc_ws_bottom_t) bottom;
     void **pc_start;
@@ -378,13 +389,13 @@ int8_t jl_gc_safe_leave(jl_ptls_t ptls, int8_t state); // Can be a safepoint
 #endif
 JL_DLLEXPORT void (jl_gc_safepoint)(void);
 #define GC_WS_BACKOFF
-// Exponential backoff for work-stealing in mark loop
+// Exponential backoff for work-stealing in parallel marking
 STATIC_INLINE int jl_gc_ws_backoff(jl_ptls_t ptls, int success) {
     jl_gc_public_mark_sp_t *public_sp = &ptls->gc_cache.public_sp;
-    if (success)
+    if (success && public_sp->ws_wait > 1)
+        public_sp->ws_wait--;
+    else if (!success)
         public_sp->ws_wait++;
-    else
-        public_sp->ws_wait = public_sp->ws_wait / 2 + 1;
     return public_sp->ws_wait;
 }
 // Either NULL, or the address of a function that threads can call while
