@@ -388,16 +388,6 @@ int8_t jl_gc_safe_leave(jl_ptls_t ptls, int8_t state); // Can be a safepoint
 #define jl_gc_safe_leave(ptls, state) ((void)jl_gc_state_set(ptls, (state), JL_GC_STATE_SAFE))
 #endif
 JL_DLLEXPORT void (jl_gc_safepoint)(void);
-#define GC_WS_BACKOFF
-// Exponential backoff for work-stealing in parallel marking
-STATIC_INLINE int jl_gc_ws_backoff(jl_ptls_t ptls, int success) {
-    jl_gc_public_mark_sp_t *public_sp = &ptls->gc_cache.public_sp;
-    if (success && public_sp->ws_wait > 1)
-        public_sp->ws_wait--;
-    else if (!success)
-        public_sp->ws_wait++;
-    return public_sp->ws_wait;
-}
 // Either NULL, or the address of a function that threads can call while
 // waiting for the GC, which will recruit them into a concurrent GC operation.
 extern _Atomic(void *) jl_gc_recruiting_location;

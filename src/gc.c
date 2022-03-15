@@ -1701,10 +1701,10 @@ STATIC_INLINE void *gc_pop_pc(jl_gc_public_mark_sp_t *public_sp, jl_gc_mark_sp_t
         pc = jl_atomic_load_relaxed(
              (_Atomic(void *) *)&public_sp->pc_start[b % GC_PUBLIC_MARK_SP_SZ]);
         if (__unlikely(b == top.offset)) {
-            // The original implementation of Chase and Lev's deque would perform
-            // a compare-and-swap on the top to determine whether it's safe to claim
-            // that element. This won't work because of `gc_repush_markdata`, so a
-            // version number is kept instead
+            // The original implementation of Chase and Lev's deque would compare-and-swap
+            // top with top + 1 to determine whether it's safe to claim the corresponding work item. 
+            // This won't work because `gc_repush_markdata` assumes that data is already on the
+            // mark queue and simply increments the bottom when pushing, so we keep a version number instead
             jl_gc_ws_top_t new_top = {top.offset, top.version + 1};
             if (!jl_atomic_cmpswap(&public_sp->top, &top, new_top)) {
                 pc = (void*)_GC_MARK_L_MAX;
@@ -2652,8 +2652,6 @@ module_binding: {
                 goto objarray_loaded;
             }
             gc_repush_markdata(gc_cache, &sp, gc_mark_objarray_t);
-            // avail_sp->data = gc_get_markdata_bottom(gc_cache, &sp)) + sizeof(data));
-            // avail_sp->pc++;
         }
         else {
             gc_mark_push_remset(ptls, (jl_value_t*)m, binding->nptr);
@@ -2838,7 +2836,6 @@ mark: {
             gc_mark_binding_t markdata = {m, table + 1, table + bsize, nptr, bits};
             gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(module_binding),
                                &markdata, sizeof(markdata), inc_data_only);
-            // avail_sp->data = gc_get_markdata_bottom(gc_cache, &sp)) + sizeof(markdata));
             goto module_binding;
         }
         else if (vt == jl_task_type) {
@@ -2959,7 +2956,6 @@ mark: {
                 gc_mark_obj32_t markdata = {new_obj, obj32_begin, obj32_end, nptr};
                 gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(obj32),
                                    &markdata, sizeof(markdata), inc_data_only);
-                // avail_sp->data = gc_get_markdata_bottom(gc_cache, &sp)) + sizeof(markdata));
                 goto obj32;
             }
             else {
@@ -3567,7 +3563,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
    
     public_sp->overflow = 0;    
     public_sp->ws_enabled = 0;
-    public_sp->ws_wait = 1;
+    public_sp->ws_timeout = 1;
     public_sp->top = initial_top;
     public_sp->bottom = initial_bottom;
     public_sp->pc_start = (void**)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(void*));

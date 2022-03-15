@@ -160,15 +160,8 @@ void jl_safepoint_wait_gc(void)
     // Use normal volatile load in the loop for speed until GC finishes.
     // Then use an acquire load to make sure the GC result is visible on this thread.
     while (jl_atomic_load_relaxed(&jl_gc_running) || jl_atomic_load_acquire(&jl_gc_running)) {
-        int recruited = jl_gc_try_recruit(ptls);
-    #ifdef GC_WS_BACKOFF
-        int ws_wait = jl_gc_ws_backoff(ptls, recruited);
-        for (int i = 0; i < ws_wait; i++)
-            jl_cpu_pause();
-    #else
-        if (recruited)
+        if (jl_gc_try_recruit(ptls))
             break;
-    #endif
     }
 }
 
