@@ -2311,7 +2311,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, jl_gc_mark_sp_t sp)
 
         return;
     }
-
+    
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
     jl_gc_public_mark_sp_t *public_sp = &gc_cache->public_sp;
     uint8_t enabled_stealing = 0;
@@ -2348,7 +2348,7 @@ pop: {
             }
             gc_mark_jmp(pc);
         }
-        for (int i = 0; i < jl_n_threads * jl_n_threads; i++) {
+        for (int i = 0; i < jl_n_threads; i++) {
             uint64_t victim = rand() % jl_n_threads;
             if (victim == ptls->tid)
                 continue;
@@ -3538,6 +3538,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
    
     public_sp->overflow = 0;    
     public_sp->enabled_stealing = 0;
+    public_sp->ws_wait = 1;
     public_sp->top = initial_top;
     public_sp->bottom = initial_bottom;
     public_sp->pc_start = (void**)malloc_s(GC_PUBLIC_MARK_SP_SZ * sizeof(void*));
