@@ -1806,12 +1806,14 @@ STATIC_INLINE int gc_mark_stack_steal(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_c
     jl_gc_ws_bottom_t bottom = jl_atomic_load_acquire(&public_sp2->bottom);
     int size = bottom.pc_offset - top.offset;
     jl_gc_ws_top_t new_top = {top.offset + 1, top.version + 1};
-    if (size <= 0 || !jl_atomic_cmpswap(&public_sp2->top, &top, new_top))
+    if (size <= 0) 
         return 0;
     void *pc = jl_atomic_load_relaxed(
         (_Atomic(void *) *)&public_sp2->pc_start[top.offset % GC_PUBLIC_MARK_SP_SZ]);
     size_t data_size = gc_mark_label_sizes[(int)(uintptr_t)pc];
     jl_gc_mark_data_t *data = &public_sp2->data_start[top.offset % GC_PUBLIC_MARK_SP_SZ];
+    if (!jl_atomic_cmpswap(&public_sp2->top, &top, new_top))
+        return 0;
     return gc_public_mark_stack_trypush(&gc_cache->public_sp, pc, data, data_size, inc);
 }
 
