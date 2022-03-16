@@ -2621,7 +2621,7 @@ module_binding: {
                     if (gc_try_setmark(globalref, &binding->nptr, &gr_tag, &gr_bits)) {
                         gc_mark_marked_obj_t data = {globalref, gr_tag, gr_bits};
                         gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(marked_obj),
-                                           &data, sizeof(data), 1);
+                                           &data, sizeof(data), inc);
                     }
                     goto mark;
                 }
@@ -2646,7 +2646,7 @@ module_binding: {
             objary_end = objary_begin + nusings;
             gc_mark_objarray_t data = {(jl_value_t*)m, objary_begin, objary_end, 1, binding->nptr};
             gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(objarray),
-                               &data, sizeof(data), 0);
+                               &data, sizeof(data), no_inc);
             if (!scanparent) {
                 objary = gc_get_markdata_bottom(gc_cache, &sp);
                 goto objarray_loaded;
@@ -2723,7 +2723,7 @@ mark: {
             objary_end = data + l;
             gc_mark_objarray_t markdata = {new_obj, objary_begin, objary_end, 1, nptr};
             gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(objarray),
-                               &markdata, sizeof(markdata), 0);
+                               &markdata, sizeof(markdata), no_inc);
             objary = gc_get_markdata_bottom(gc_cache, &sp);
             goto objarray_loaded;
         }
@@ -2779,7 +2779,7 @@ mark: {
                 objary_end = objary_begin + l;
                 gc_mark_objarray_t markdata = {new_obj, objary_begin, objary_end, 1, nptr};
                 gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(objarray),
-                                   &markdata, sizeof(markdata), 0);
+                                   &markdata, sizeof(markdata), no_inc);
                 objary = gc_get_markdata_bottom(gc_cache, &sp);
                 goto objarray_loaded;
             }
@@ -2796,7 +2796,7 @@ mark: {
                     objary_begin += layout->first_ptr;
                     gc_mark_objarray_t markdata = {new_obj, objary_begin, objary_end, elsize, nptr};
                     gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(objarray),
-                                       &markdata, sizeof(markdata), 0);
+                                       &markdata, sizeof(markdata), no_inc);
                     objary = gc_get_markdata_bottom(gc_cache, &sp);
                     goto objarray_loaded;
                 }
@@ -2805,7 +2805,7 @@ mark: {
                     obj8_end = obj8_begin + npointers;
                     gc_mark_array8_t markdata = {objary_begin, objary_end, obj8_begin, {new_obj, obj8_begin, obj8_end, nptr}};
                     gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(array8),
-                                       &markdata, sizeof(markdata), 0);
+                                       &markdata, sizeof(markdata), no_inc);
                     ary8 = gc_get_markdata_bottom(gc_cache, &sp);
                     goto array8_loaded;
                 }
@@ -2814,7 +2814,7 @@ mark: {
                     obj16_end = obj16_begin + npointers;
                     gc_mark_array16_t markdata = {objary_begin, objary_end, obj16_begin, {new_obj, obj16_begin, obj16_end, nptr}};
                     gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(array16),
-                                       &markdata, sizeof(markdata), 0);
+                                       &markdata, sizeof(markdata), no_inc);
                     ary16 = gc_get_markdata_bottom(gc_cache, &sp);
                     goto array16_loaded;
                 }
@@ -2878,14 +2878,14 @@ mark: {
                 assert(nroots <= UINT32_MAX);
                 gc_mark_stackframe_t stackdata = {s, 0, (uint32_t)nroots, offset, lb, ub};
                 gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(stack),
-                                   &stackdata, sizeof(stackdata), 1);
+                                   &stackdata, sizeof(stackdata), inc);
             }
             if (ta->excstack) {
                 gc_setmark_buf_(ptls, ta->excstack, bits, sizeof(jl_excstack_t) +
                                 sizeof(uintptr_t)*ta->excstack->reserved_size);
                 gc_mark_excstack_t stackdata = {ta->excstack, ta->excstack->top, 0, 0};
                 gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(excstack),
-                                   &stackdata, sizeof(stackdata), 1);
+                                   &stackdata, sizeof(stackdata), inc);
             }
             const jl_datatype_layout_t *layout = jl_task_type->layout;
             assert(layout->fielddesc_type == 0);
@@ -2897,7 +2897,7 @@ mark: {
             uintptr_t nptr = (npointers << 2) | 1 | bits;
             gc_mark_obj8_t markdata = {new_obj, obj8_begin, obj8_end, nptr};
             gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(obj8),
-                               &markdata, sizeof(markdata), 0);
+                               &markdata, sizeof(markdata), no_inc);
             obj8 = gc_get_markdata_bottom(gc_cache, &sp);
             obj8_parent = (char*)ta;
             goto obj8_loaded;
@@ -2933,7 +2933,7 @@ mark: {
                 assert(obj8_begin < obj8_end);
                 gc_mark_obj8_t markdata = {new_obj, obj8_begin, obj8_end, nptr};
                 gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(obj8),
-                                   &markdata, sizeof(markdata), 0);
+                                   &markdata, sizeof(markdata), no_inc);
                 obj8 = gc_get_markdata_bottom(gc_cache, &sp);
                 goto obj8_loaded;
             }
@@ -2944,7 +2944,7 @@ mark: {
                 assert(obj16_begin < obj16_end);
                 gc_mark_obj16_t markdata = {new_obj, obj16_begin, obj16_end, nptr};
                 gc_mark_stack_push(&ptls->gc_cache, &sp, gc_mark_laddr(obj16),
-                                   &markdata, sizeof(markdata), 0);
+                                   &markdata, sizeof(markdata), no_inc);
                 obj16 = gc_get_markdata_bottom(gc_cache, &sp);
                 goto obj16_loaded;
             }
