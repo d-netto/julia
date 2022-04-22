@@ -1832,7 +1832,7 @@ STATIC_INLINE void gc_mark_stack_push(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_s
 }
 
 // Steal a work item from the public queue in the cache referenced by `gc_cache2`
-STATIC_INLINE int gc_mark_stack_steal(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_cache_t *gc_cache2) 
+STATIC_INLINE int gc_mark_stack_try_steal(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_cache_t *gc_cache2) 
 {
     jl_gc_public_mark_sp_t *public_sp2 = &gc_cache2->public_sp;
     jl_gc_ws_top_t top = jl_atomic_load_acquire(&public_sp2->top);
@@ -1841,13 +1841,14 @@ STATIC_INLINE int gc_mark_stack_steal(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_c
     // No items to steal
     if (bottom.pc_offset - top.offset <= 0) 
         return 0;
+    // Try to steal
+    void *pc = jl_atomic_load_relaxed((_Atomic(void *) *)&public_sp2->pc_start[top.offset]);
+    jl_gc_mark_data_t *data = &public_sp2->data_start[top.offset];
     jl_gc_ws_top_t top2 = {top.offset + 1, top.version + 1};
     // Top already claimed by another thief: abort stealing
     if (!jl_atomic_cmpswap(&public_sp2->top, &top, top2))
         return 0;
     // Push stolen items to thief's public queue
-    void *pc = jl_atomic_load_relaxed((_Atomic(void *) *)&public_sp2->pc_start[top.offset]);
-    jl_gc_mark_data_t *data = &public_sp2->data_start[top.offset];
     size_t data_size = gc_mark_label_sizes[(int)(uintptr_t)pc];
     return gc_public_mark_stack_try_push(&gc_cache->public_sp, pc, data, data_size, inc);
 }
@@ -2410,7 +2411,7 @@ pop: {
             uint64_t victim = rand() % jl_n_threads;
             if (victim == ptls->tid)
                 continue;
-            if (gc_mark_stack_steal(gc_cache, &jl_all_tls_states[victim]->gc_cache))
+            if (gc_mark_stack_try_steal(gc_cache, &jl_all_tls_states[victim]->gc_cache))
                 goto pop;
         }
         return;
