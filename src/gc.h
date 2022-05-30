@@ -215,7 +215,11 @@ union _jl_gc_mark_data {
 STATIC_INLINE void *gc_get_markdata_bottom(jl_gc_ws_queue_t *mark_queue) JL_NOTSAFEPOINT
 {
     jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&mark_queue->bottom);
+#ifdef ARRAY_AS_PTR
     jl_gc_ws_array_t *array = jl_atomic_load_relaxed(&mark_queue->array);
+#else
+    jl_gc_ws_array_t *array = &mark_queue->array;
+#endif
     return &array->data_start[bottom.data_offset % array->size];
 }
 
@@ -225,7 +229,11 @@ STATIC_INLINE void *gc_get_markdata_bottom(jl_gc_ws_queue_t *mark_queue) JL_NOTS
 STATIC_INLINE void *gc_repush_markdata(jl_gc_ws_queue_t *mark_queue) JL_NOTSAFEPOINT
 {
     jl_gc_ws_bottom_t bottom = jl_atomic_load_relaxed(&mark_queue->bottom);
+#ifdef ARRAY_AS_PTR
     jl_gc_ws_array_t *array = jl_atomic_load_relaxed(&mark_queue->array);
+#else
+    jl_gc_ws_array_t *array = &mark_queue->array;
+#endif
     jl_gc_mark_data_t *data = &array->data_start[bottom.data_offset % array->size];
     bottom.pc_offset++;
     bottom.data_offset++;

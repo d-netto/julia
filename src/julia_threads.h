@@ -184,10 +184,17 @@ typedef struct {
     int64_t size;
 } jl_gc_ws_array_t;
 
+#define GC_QUEUE_INIT_SIZE (1 << 18)
+#define ARRAY_AS_PTR
+
 typedef struct {
     _Atomic(jl_gc_ws_top_t) top;
     _Atomic(jl_gc_ws_bottom_t) bottom;
+#ifdef ARRAY_AS_PTR
     _Atomic(jl_gc_ws_array_t *) array;
+#else
+    jl_gc_ws_array_t array;
+#endif
     arraylist_t *reclaim_set;
 } jl_gc_ws_queue_t;
 
