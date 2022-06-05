@@ -1866,7 +1866,7 @@ STATIC_INLINE void gc_mark_stack(jl_ptls_t ptls, jl_gcframe_t *s, uint32_t nroot
     uintptr_t nptr = 0;
     while (1) {
         jl_value_t ***rts = (jl_value_t***)(((void**)s) + 2);
-        for (uint32_t i = 0; i < nr; i += 2) {
+        for (uint32_t i = 0; i < nr; i++) {
             if (nroots & 1) {
                 void **slot = (void**)gc_read_stack(&rts[i], offset, lb, ub);
                 new_obj = (jl_value_t*)gc_read_stack(slot, offset, lb, ub);
@@ -1897,25 +1897,22 @@ STATIC_INLINE void gc_mark_excstack(jl_ptls_t ptls, jl_excstack_t *excstack,
                                     size_t itr) JL_NOTSAFEPOINT
 {
     jl_value_t *new_obj;
-    size_t bt_index = 0;
-    size_t jlval_index = 0;
     while (itr > 0) {
         size_t bt_size = jl_excstack_bt_size(excstack, itr);
         jl_bt_element_t *bt_data = jl_excstack_bt_data(excstack, itr);
-        for (; bt_index < bt_size; bt_index += jl_bt_entry_size(bt_data + bt_index)) {
+        for (size_t bt_index = 0; bt_index < bt_size; 
+             bt_index += jl_bt_entry_size(bt_data + bt_index)) {
             jl_bt_element_t *bt_entry = bt_data + bt_index;
             if (jl_bt_is_native(bt_entry))
                 continue;
             // Found an extended backtrace entry: iterate over any
             // GC-managed values inside.
             size_t njlvals = jl_bt_num_jlvals(bt_entry);
-            while (jlval_index < njlvals) {
+            for (size_t jlval_index = 0; jlval_index < njlvals; jlval_index++) {
                 new_obj = jl_bt_entry_jlvalue(bt_entry, jlval_index);
                 uintptr_t nptr = 0;
                 gc_try_claim_and_push(mq, new_obj);
-                jlval_index += 1;
             }
-            jlval_index = 0;
         }
         // The exception comes last - mark it
         uintptr_t nptr = 0;
