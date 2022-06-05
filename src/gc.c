@@ -1783,12 +1783,14 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent,
 
 JL_DLLEXPORT int jl_gc_mark_queue_obj(jl_ptls_t ptls, jl_value_t *obj)
 {
+    // FIXME - change this to reflect new marking scheme
     return 1;
 }
 
 JL_DLLEXPORT void jl_gc_mark_queue_objarray(jl_ptls_t ptls, jl_value_t *parent,
                                             jl_value_t **objs, size_t nobjs)
 {
+    // FIXME - change this to reflect new marking scheme
     return;
 }
 
@@ -2022,6 +2024,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
     uintptr_t nptr = 0;
     uintptr_t tag = 0;
     uint8_t bits = 0;
+    int meta_updated = 0;
 
     // Used to mark an object array
     // which can come from an array, svec
@@ -2073,7 +2076,8 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
             // TODO: steal from another thread
             return;
         }
-        gc_try_setmark(new_obj, &tag, &bits);
+        if (!gc_try_setmark(new_obj, &tag, &bits))
+            meta_updated = 1;
     #ifdef JL_DEBUG_BUILD
         if (new_obj == gc_findval)
             jl_raise_debugger();
@@ -2081,11 +2085,12 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
         jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
         jl_datatype_t *vt = (jl_datatype_t*)tag;
         int foreign_alloc = 0;
-        int update_meta = __likely(!gc_verifying);
-        if ((void*)o >= sysimg_base && (void*)o < sysimg_end) {
+        int update_meta = __likely(!meta_updated && !gc_verifying);
+        if (update_meta && (void*)o >= sysimg_base && (void*)o < sysimg_end) {
             foreign_alloc = 1;
             update_meta = 0;
         }
+        meta_updated = 0;
         // Symbols are always marked
         assert(vt != jl_symbol_type);
         if (vt == jl_simplevector_type) {
@@ -2959,7 +2964,6 @@ void jl_gc_init(void)
     if (maxmem > max_collect_interval)
         max_collect_interval = maxmem;
 #endif
-    gc_mark_loop(NULL);
     t_start = jl_hrtime();
 }
 
