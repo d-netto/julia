@@ -173,12 +173,10 @@ typedef struct {
 typedef union _jl_gc_mark_data jl_gc_mark_data_t;
 
 typedef struct {
-    void **pc_start; //
-    void **pc; // Current stack address for the pc (up growing)
-    void **pc_end; //
-    jl_gc_mark_data_t *data_start; //
-    jl_gc_mark_data_t *data; // Current stack address for the data (up growing)
-} jl_gc_mark_sp_t;
+    struct _jl_value_t **start;
+    struct _jl_value_t **current;
+    struct _jl_value_t **end;
+} jl_gc_markqueue_t;
 
 typedef struct {
     // thread local increment of `perm_scanned_bytes`
