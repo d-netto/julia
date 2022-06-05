@@ -85,10 +85,10 @@ typedef struct {
 // Double the mark queue
 static void NOINLINE gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
-    jl_value **old_start = mq->start;
+    jl_value_t **old_start = mq->start;
     size_t old_queue_size = (mq->end - mq->start);
     size_t offset = (mq->current - old_start);
-    mq->start = (jl_value**)realloc_s(old_start, 2 * old_queue_size * sizeof(jl_value*));
+    mq->start = (jl_value_t**)realloc_s(old_start, 2 * old_queue_size * sizeof(jl_value_t*));
     mq->current = (mq->start + offset);
     mq->end = (mq->start + 2 * old_queue_size);
 }
@@ -376,14 +376,12 @@ STATIC_INLINE void gc_big_object_link(bigval_t *hdr, bigval_t **list) JL_NOTSAFE
     *list = hdr;
 }
 
-void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_mark_sp_t *sp);
-void gc_mark_queue_finlist(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp,
+void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_markqueue_t *mq);
+void gc_mark_queue_finlist(jl_gc_mark_cache_t *gc_cache, jl_gc_markqueue_t *mq,
                            arraylist_t *list, size_t start);
 void gc_mark_loop(jl_ptls_t ptls);
 void sweep_stack_pools(void);
 void jl_gc_debug_init(void);
-
-extern void *gc_mark_label_addrs[_GC_MARK_L_MAX];
 
 // GC pages
 

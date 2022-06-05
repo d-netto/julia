@@ -743,7 +743,7 @@ STATIC_INLINE int gc_setmark_tag(jl_taggedvalue_t *o, uint8_t mark_mode,
         assert((tag & 0x3) == mark_mode);
     }
     *bits = mark_mode;
-    tag = jl_atomic_exchange_relaxed((_Atomic(uintptr_t)*)&o->header, tag);
+    tag = jl_atomic_fetch_or((_Atomic(uintptr_t)*)&o->header, tag);
     verify_val(jl_valueof(o));
     return !gc_marked(tag);
 }
@@ -1686,7 +1686,7 @@ STATIC_INLINE uintptr_t gc_read_stack(void *_addr, uintptr_t offset,
 }
 
 JL_NORETURN NOINLINE void gc_assert_datatype_fail(jl_ptls_t ptls, jl_datatype_t *vt,
-                                                  jl_gc_mark_sp_t *sp)
+                                                  jl_gc_markqueue_t *mq)
 {
     jl_safe_printf("GC error (probable corruption) :\n");
     jl_gc_debug_print_status();
@@ -1696,26 +1696,21 @@ JL_NORETURN NOINLINE void gc_assert_datatype_fail(jl_ptls_t ptls, jl_datatype_t 
     abort();
 }
 
-// This stores the label address in the mark loop function.
-// We can't directly store that to a global array so we need some hack to get that.
-// See the call to `gc_mark_loop` in init with a `NULL` `ptls`.
-void *gc_mark_label_addrs[_GC_MARK_L_MAX];
-
 // TODO: write docstring
-STATIC_INLINE int gc_try_claim_and_push(jl_gc_markqueue_t *mq, 
-                                        jl_value_t *obj) JL_NOTSAFEPOINT
+STATIC_INLINE int gc_try_claim_and_push(jl_gc_markqueue_t *mq, jl_value_t *obj,
+                                        uintptr_t *nptr) JL_NOTSAFEPOINT
 {
     if (!obj)
         return 0;
     jl_taggedvalue_t *o = jl_astaggedvalue(obj);
     // Third `gc` bit in the header indicates whether `obj`
-    // has been enqueued
-    uint8_t enqueued = (jl_atomic_fetch_or(&o->header, 0x4) & 0x4);
-    if (!enqueued) {
+    // has been already enqueued
+    uint8_t enqueued = (jl_atomic_fetch_or((_Atomic(uintptr_t)*)(&o->header), 0x4) & 0x4);
+    if (!enqueued)
         gc_markqueue_push(mq, obj);
-        return 1;
-    }
-    return 0;
+    if (!gc_old(o->header))
+        *nptr |= 1;
+    return !enqueued;
 }
 
 // Check if the reference is non-NULL and atomically set the mark bit.
@@ -1731,8 +1726,6 @@ STATIC_INLINE int gc_try_setmark(jl_value_t *obj, uintptr_t *ptag,
     if (!gc_marked(tag)) {
         uint8_t bits;
         int res = gc_setmark_tag(o, GC_MARKED, tag, &bits);
-        if (!gc_old(bits))
-            *nptr = *nptr | 1;
         *ptag = tag & ~(uintptr_t)0xf;
         *pbits = bits;
         return __likely(res);
@@ -1760,154 +1753,120 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
 }
 
 // Mark a dense array of object references
-STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls,
-                                    jl_value_t **begin, jl_value_t **end)
+STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, 
+                                    jl_value_t **obj_begin, jl_value_t **obj_end, 
+                                    uint32_t step, uintptr_t nptr) JL_NOTSAFEPOINT
 {
-    jl_value_t *new_obj = NULL;
-    uintptr_t tag;
-    for (; begin < end; begin += objary->step) {
-        new_obj = *begin;
+    jl_value_t *new_obj;
+    for (; obj_begin < obj_end; obj_begin += step) {
+        new_obj = *obj_begin;
         if (new_obj)
-            verify_parent2("obj array", objary->parent, begin, "elem(%d)",
-                           gc_slot_to_arrayidx(, begin));
-        if (!gc_try_claim_and_push(mq, new_obj))
-            continue;
-        // TODO: Update bits for generational GC
-        begin += objary->step;
+            verify_parent2("obj array", obj_parent, obj_begin, "elem(%d)",
+                           gc_slot_to_arrayidx(obj_parent, obj_begin));
+        gc_try_claim_and_push(mq, new_obj, &nptr);
     }
-    gc_mark_push_remset(ptls, objary->parent, objary->nptr);
+    gc_mark_push_remset(ptls, obj_parent, nptr);
 }
 
 // Mark a sparse array of object references
-STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls,
-                                  jl_value_t **begin, jl_value_t **end,
-                                  uint8_t *elem_begin, uint8_t *elem_end)
+STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t **ary8_begin, jl_value_t **ary8_end,
+                                  jl_value_t *ary8_parent, uint8_t *elem_begin, uint8_t *elem_end, 
+                                  uintptr_t nptr) JL_NOTSAFEPOINT
 {
-    jl_value_t *new_obj = NULL;
-    jl_taggedvalue_t *o = NULL;
-    size_t elsize = ((jl_array_t*)ary8->elem.parent)->elsize / sizeof(jl_value_t*);
-    for (; begin < end; begin += elsize) {
+    jl_value_t *new_obj;
+    size_t elsize = ((jl_array_t*)ary8_parent)->elsize / sizeof(jl_value_t*);
+    for (; ary8_begin < ary8_end; ary8_begin += elsize) {
         for (; elem_begin < elem_end; elem_begin++) {
-            new_obj = begin[*elem_begin];
+            new_obj = ary8_begin[*elem_begin];
             if (new_obj)
-                verify_parent2("array", ary8->elem.parent, slot, "elem(%d)",
-                               gc_slot_to_arrayidx(ary8->elem.parent, begin));
-            if (!gc_try_claim_and_push(mq, new_obj))
-                continue;
-            // TODO: Update bits for generational GC
-            elem_begin++;
-            // Fill up the rest here
+                verify_parent2("array", ary8_parent, &new_obj, "elem(%d)",
+                               gc_slot_to_arrayidx(ary8_parent, ary8_begin));
+            gc_try_claim_and_push(mq, new_obj, &nptr);
         }
-        elem_begin = ary8->rebegin;
     }
-    gc_mark_push_remset(ptls, ary8->elem.parent, ary8->elem.nptr);
+    gc_mark_push_remset(ptls, ary8_parent, nptr);
 }
 
 // Mark a sparse array of object references
-STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls,
-                                   jl_value_t **begin, jl_value_t **end,
-                                   uint16_t *elem_begin, uint16_t *elem_end)
+STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t **ary16_begin, jl_value_t **ary16_end,
+                                   jl_value_t *ary16_parent, uint16_t *elem_begin, uint16_t *elem_end, 
+                                   uintptr_t nptr) JL_NOTSAFEPOINT
 {
-    jl_value_t *new_obj = NULL;
-    jl_taggedvalue_t *o = NULL;
-    size_t elsize = ((jl_array_t*)ary16->elem.parent)->elsize / sizeof(jl_value_t*);
-    for (; begin < end; begin += elsize) {
+    jl_value_t *new_obj;
+    size_t elsize = ((jl_array_t*)ary16_parent)->elsize / sizeof(jl_value_t*);
+    for (; ary16_begin < ary16_end; ary16_begin += elsize) {
         for (; elem_begin < elem_end; elem_begin++) {
-            jl_value_t *new_obj = begin[*elem_begin];
+            new_obj = ary16_begin[*elem_begin];
             if (new_obj)
-                verify_parent2("array", ary16->elem.parent, slot, "elem(%d)",
-                               gc_slot_to_arrayidx(ary16->elem.parent, begin));
-            if (gc_try_claim_and_push(new_obj)) {
-                elem_begin++;
-                // TODO: Update bits for generational GC
-            }
-            else {
-                begin += elsize;
-                if (begin < end) {
-                    // Haven't done with this array yet. Reset the content and push it back
-                    ary16->elem.begin = ary16->rebegin;
-                    ary16->begin = begin;
-                    gc_repush_markdata(sp, gc_mark_array16_t);
-                }
-                else {
-                    // Finished scanning this one, finish up by checking the GC invariance
-                    // and let the next item replacing the current one directly.
-                    gc_mark_push_remset(ptls, ary16->elem.parent, ary16->elem.nptr);
-                }
-            }
+                verify_parent2("array", ary16_parent, &new_obj, "elem(%d)",
+                               gc_slot_to_arrayidx(ary16_parent, ary16_begin));
+            gc_try_claim_and_push(mq, new_obj, &nptr);
         }
-        elem_begin = ary16->rebegin;
     }
-    gc_mark_push_remset(ptls, ary16->elem.parent, ary16->elem.nptr);
+    gc_mark_push_remset(ptls, ary16_parent, nptr);
 }
 
 
 // Mark an object with 8bit field descriptors
-STATIC_INLINE void gc_mark_obj8(jl_ptls_t ptls, char *parent, 
-                                uint8_t *begin, uint8_t *end)
+STATIC_INLINE void gc_mark_obj8(jl_ptls_t ptls, jl_value_t *obj8_parent, uint8_t *obj8_begin, 
+                                uint8_t *obj8_end, uintptr_t nptr) JL_NOTSAFEPOINT
 {
-    (void)jl_assume(begin < end);
-    jl_value_t *new_obj = NULL;
-    for (; begin < end; begin++) {
-        jl_value_t *new_obj = ((jl_value_t**)parent)[*begin];
+    (void)jl_assume(obj8_begin < obj8_end);
+    jl_value_t *new_obj;
+    for (; obj8_begin < obj8_end; obj8_begin++) {
+        new_obj = ((jl_value_t**)obj8_parent)[*obj8_begin];
         if (new_obj)
-            verify_parent2("object", parent, slot, "field(%d)",
-                           gc_slot_to_fieldidx(parent, slot));
-        if (gc_try_claim_and_push(mq, new_obj)) {
-            begin++;
-            // TODO: Update bits for generational GC
-        }
+            verify_parent2("object", obj8_parent, &new_obj, "field(%d)",
+                           gc_slot_to_fieldidx(obj8_parent, &new_obj));
+        gc_try_claim_and_push(mq, new_obj);
     }
-    gc_mark_push_remset(ptls, obj8->parent, obj8->nptr);
+    gc_mark_push_remset(ptls, obj8_parent, nptr);
 }
 
 // Mark an object with 16bit field descriptors
-STATIC_INLINE void gc_mark_obj16(jl_ptls_t ptls, char *parent, 
-                                 uint16_t *begin, uint16_t *end) JL_NOTSAFEPOINT
+STATIC_INLINE void gc_mark_obj16(jl_ptls_t ptls, jl_value_t *obj16_parent, uint16_t *obj16_begin, 
+                                 uint16_t *obj16_end) JL_NOTSAFEPOINT
 {
-    (void)jl_assume(begin < end);
-    jl_value_t *new_obj = NULL;
-    for (; begin < end; begin++) {
-        new_obj = ((jl_value_t**)parent)[*begin];
+    (void)jl_assume(obj16_begin < obj16_end);
+    jl_value_t *new_obj;
+    uintptr_t nptr = 0;
+    for (; obj16_begin < obj16_end; obj16_begin++) {
+        new_obj = ((jl_value_t**)obj16_parent)[*obj16_begin];
         if (new_obj)
-            verify_parent2("object", parent, slot, "field(%d)",
-                           gc_slot_to_fieldidx(parent, slot));
-        if (gc_try_claim_and_push(mq, new_obj)) {
-            begin++;
-            // TODO: Update bits for generational GC
-        }
+            verify_parent2("object", obj16_parent, &new_obj, "field(%d)",
+                           gc_slot_to_fieldidx(obj16_parent, &new_obj));
+        gc_try_claim_and_push(mq, new_obj, &nptr);
     }
-    gc_mark_push_remset(ptls, obj16->parent, obj16->nptr);
+    gc_mark_push_remset(ptls, obj16_parent, nptr);
 }
 
 // Mark an object with 32bit field descriptors
-STATIC_INLINE void gc_mark_obj32(jl_ptls_t ptls, char *parent, 
-                                 uint32_t *begin, uint32_t *end)
+STATIC_INLINE void gc_mark_obj32(jl_ptls_t ptls, jl_value_t *obj32_parent, uint32_t *obj32_begin, 
+                                 uint32_t *obj32_end) JL_NOTSAFEPOINT
 {
-    (void)jl_assume(begin < end);
-    jl_value_t *new_obj = NULL;
-    for (; begin < end; begin++) {
-        new_obj = ((jl_value_t**)parent)[*begin];
+    (void)jl_assume(obj32_begin < obj32_end);
+    jl_value_t *new_obj;
+    uintptr_t nptr = 0;
+    for (; obj32_begin < obj32_end; obj32_begin++) {
+        new_obj = ((jl_value_t**)obj32_parent)[*obj32_begin];
         if (new_obj)
-            verify_parent2("object", parent, slot, "field(%d)",
-                           gc_slot_to_fieldidx(parent, slot));
-        if (gc_try_claim_and_push(mq, new_obj)) {
-            begin++;
-            // TODO: Update bits for generational GC
-        }
+            verify_parent2("object", parent, &new_obj, "field(%d)",
+                           gc_slot_to_fieldidx(parent, &new_obj));
+        gc_try_claim_and_push(mq, new_obj, &nptr);
     }
-    gc_mark_push_remset(ptls, obj32->parent, obj32->nptr);
+    gc_mark_push_remset(ptls, obj32_parent, nptr);
 }
 
 // Mark a stack
-STATIC_INLINE void gc_mark_stack(jl_gcframe_t *s, uint32_t nroots,
-                                 uintptr_t offset, uintptr_t lb, uintptr_t ub)
+STATIC_INLINE void gc_mark_stack(jl_ptls_t ptls, jl_gcframe_t *s, uint32_t nroots,
+                                 uintptr_t offset, uintptr_t lb, uintptr_t ub) JL_NOTSAFEPOINT
 {
+    jl_value_t *new_obj;
     uint32_t nr = nroots >> 2;
     uintptr_t nptr = 0;
     while (1) {
         jl_value_t ***rts = (jl_value_t***)(((void**)s) + 2);
-        for (uint32_t i = 0; i < nr; i++) {
+        for (uint32_t i = 0; i < nr; i += 2) {
             if (nroots & 1) {
                 void **slot = (void**)gc_read_stack(&rts[i], offset, lb, ub);
                 new_obj = (jl_value_t*)gc_read_stack(slot, offset, lb, ub);
@@ -1920,16 +1879,13 @@ STATIC_INLINE void gc_mark_stack(jl_gcframe_t *s, uint32_t nroots,
                     i++;
                 }
             }
-            if (gc_try_claim_and_push(mq, new_obj)) {
-                i++
-                // TODO: Update bits for generational GC
-            }
+            gc_try_claim_and_push(mq, new_obj, &nptr);
         }
         s = (jl_gcframe_t*)gc_read_stack(&s->prev, offset, lb, ub);
         if (s) {
             uintptr_t new_nroots = gc_read_stack(&s->nroots, offset, lb, ub);
             assert(new_nroots <= UINT32_MAX);
-            nroots = stack->nroots = (uint32_t)new_nroots;
+            nroots = (uint32_t)new_nroots;
             nr = nroots >> 2;
             continue;
         }
@@ -1937,9 +1893,12 @@ STATIC_INLINE void gc_mark_stack(jl_gcframe_t *s, uint32_t nroots,
 }
 
 // Mark an exception stack
-STATIC_INLINE void gc_mark_excstack(jl_excstack_t *excstack, size_t itr,
-                                    size_t bt_index, size_t jlval_index)
+STATIC_INLINE void gc_mark_excstack(jl_ptls_t ptls, jl_excstack_t *excstack, 
+                                    size_t itr) JL_NOTSAFEPOINT
 {
+    jl_value_t *new_obj;
+    size_t bt_index = 0;
+    size_t jlval_index = 0;
     while (itr > 0) {
         size_t bt_size = jl_excstack_bt_size(excstack, itr);
         jl_bt_element_t *bt_data = jl_excstack_bt_data(excstack, itr);
@@ -1953,23 +1912,25 @@ STATIC_INLINE void gc_mark_excstack(jl_excstack_t *excstack, size_t itr,
             while (jlval_index < njlvals) {
                 new_obj = jl_bt_entry_jlvalue(bt_entry, jlval_index);
                 uintptr_t nptr = 0;
-                jlval_index += 1;
                 gc_try_claim_and_push(mq, new_obj);
+                jlval_index += 1;
             }
             jlval_index = 0;
         }
         // The exception comes last - mark it
+        uintptr_t nptr = 0;
         new_obj = jl_excstack_exception(excstack, itr);
-        gc_try_claim_and_push(mq, new_obj);
+        gc_try_claim_and_push(mq, new_obj, &nptr);
     }
 }
 
 // Mark a module binding
-STATIC_INLINE void gc_mark_module_binding(jl_binding_t **begin, jl_binding_t **end,
-                                          uint8_t mbits)
+STATIC_INLINE void gc_mark_module_binding(jl_ptls_t ptls, jl_module_t *mb_parent, jl_binding_t **mb_begin, 
+                                          jl_binding_t ** mb_end, uint8_t bits) JL_NOTSAFEPOINT
 {
-    for (; begin < end; begin += 2) {
-        jl_binding_t *b = *begin;
+    uintptr_t nptr = 0;
+    for (; mb_begin < mb_end; mb_begin++) {
+        jl_binding_t *b = *mb_begin;
         if (b == (jl_binding_t*)HT_NOTFOUND)
             continue;
         if ((void*)b >= sysimg_base && (void*)b < sysimg_end) {
@@ -1980,50 +1941,41 @@ STATIC_INLINE void gc_mark_module_binding(jl_binding_t **begin, jl_binding_t **e
                 gc_setmark_tag(buf, GC_OLD_MARKED, tag, &bits);
         }
         else {
-            gc_setmark_buf_(ptls, b, mbits, sizeof(jl_binding_t));
+            gc_setmark_buf_(ptls, b, bits, sizeof(jl_binding_t));
         }
         void *vb = jl_astaggedvalue(b);
-        verify_parent1("module", binding->parent, &vb, "binding_buff");
+        verify_parent1("module", mb_parent, &vb, "binding_buff");
         (void)vb;
         jl_value_t *value = jl_atomic_load_relaxed(&b->value);
         jl_value_t *globalref = jl_atomic_load_relaxed(&b->globalref);
         if (value) {
-            verify_parent2("module", binding->parent,
+            verify_parent2("module", mb_parent,
                            &b->value, "binding(%s)", jl_symbol_name(b->name));
-            if (gc_try_claim_and_push(mq, value)) {
-                begin += 2;
-                // TODO: Update bits for generational GC
-            }
+            gc_try_claim_and_push(mq, value, &nptr);
         }
-        if (gc_try_claim_and_push(mq, globalref)) {
-            begin += 2;
-            // TODO: Update bits for generational GC
-        }
+        gc_try_claim_and_push(mq, globalref, &nptr);
     }
-    jl_module_t *m = binding->parent;
-    int scanparent = gc_try_claim_and_push(mq, (jl_value_t*)m->parent);
-    size_t nusings = m->usings.len;
+    int scanparent = gc_try_claim_and_push(mq, mb_parent->parent);
+    size_t nusings = mb_parent->usings.len;
     if (nusings > 0)
-        gc_mark_push_remset(ptls, (jl_value_t*)m, binding->nptr);
+        gc_mark_push_remset(ptls, (jl_value_t*)mb_parent, nptr);
 }
 
 // Mark a finalizer (or format compatible) list
-STATIC_INLINE void gc_mark_finlist(jl_value_t **begin, jl_value_t **end)
+STATIC_INLINE void gc_mark_finlist(jl_value_t **fl_begin, 
+                                   jl_value_t **fl_end) JL_NOTSAFEPOINT
 {
-    for (; begin < end; begin++) {
-        new_obj = *begin;
+    jl_value_t *new_obj;
+    for (; fl_begin < fl_end; fl_begin++) {
+        new_obj = *fl_begin;
         if (__unlikely(!new_obj))
             continue;
         if (gc_ptr_tag(new_obj, 1)) {
             new_obj = (jl_value_t*)gc_ptr_clear_tag(new_obj, 1);
-            begin++;
-            assert(begin < end);
+            fl_begin++;
+            assert(fl_begin < fl_end);
         }
-        uintptr_t nptr = 0;
-        if (!gc_try_setmark(new_obj, &nptr, &tag, &bits))
-            continue;
-        // TODO: Update bits for generational GC
-        begin++;
+        gc_try_claim_and_push(mq, new_obj);
     }
 }
 
@@ -2034,45 +1986,34 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
     uintptr_t nptr = 0;
     uintptr_t tag = 0;
     uint8_t bits = 0;
-    int meta_updated = 0;
 
-    /**
-     * Used to mark an object array
-     * which can come from an array, svec
-     * or the using array or a module
-     */
+    // Used to mark an object array
+    // which can come from an array, svec
+    // or the using array or a module
     jl_value_t *objary_parent; // The parent object to trigger write barrier on.
     jl_value_t **objary_begin; // The first slot to be scanned
     jl_value_t **objary_end; // The end address (after the last slot to be scanned)
     uint32_t step; // Number of pointers to jump between marks
 
-    /**
-     * Used to mark a normal object with 
-     * 8bit field descriptors
-     */
+    // Used to mark a normal object with 
+    // 8bit field descriptors
     jl_value_t *obj8_parent; // The parent object to trigger write barrier on.
     uint8_t *obj8_begin; // Begin of field descriptor.
     uint8_t *obj8_end; // End of field descriptor.
 
-    /**
-     * Used to mark a normal object with 
-     * 16bit field descriptors
-     */
+    // Used to mark a normal object with 
+    // 16bit field descriptors
     jl_value_t *obj16_parent; // The parent object to trigger write barrier on.
     uint16_t *obj16_begin; // Begin of field descriptor.
     uint16_t *obj16_end; // End of field descriptor.
 
-    /**
-     * Used to mark a normal object with 
-     * 32bit field descriptors
-     */
+    // Used to mark a normal object with 
+    // 32bit field descriptors
     jl_value_t *obj32_parent; // The parent object to trigger write barrier on.
     uint32_t *obj32_begin; // Begin of field descriptor.
     uint32_t *obj32_end; // End of field descriptor.
 
-    /**
-     * Used to mark a stack frame
-     */
+    // Used to mark a stack frame
     jl_gcframe_t *s; // The current stack frame
     uint32_t i; // The current slot index in the frame
     uint32_t nroots; // `nroots` fields in the frame
@@ -2081,31 +2022,30 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
     uintptr_t lb;
     uintptr_t ub;
 
-    /**
-     * Used to mark an exception stack
-     */
-    jl_excstack_t *s;   // Stack of exceptions
-    size_t itr;         // Iterator into exception stack
-    size_t bt_index;    // Current backtrace buffer entry index
-    size_t jlval_index; // Index into GC managed values for current bt entry
+    // Used to mark an exception stack
+    jl_excstack_t *excstack; // Stack of exceptions
+    size_t itr; // Iterator into exception stack
 
-    /**
-     * Used to mark module bindings
-     */
+    // Used to mark module bindings
     jl_module_t *mb_parent; // The parent module to trigger write barrier on.
     jl_binding_t **mb_begin; // The first slot to be scanned.
     jl_binding_t **mb_end; // The end address (after the last slot to be scanned)
 
-    /**
-     * Used to mark a finalizer (or object) list
-     */
+    // Used to mark a finalizer (or object) list
     jl_value_t **fl_begin;
     jl_value_t **fl_end;
 
-    while ((new_obj = gc_pop_markqueue(ptls))) {
+    while (1) {
+        new_obj = gc_markqueue_pop(mq);
+        // No more objects to mark
+        if (!new_obj) {
+            // TODO: steal from another thread
+            return;
+        }
         // Object is already marked
-        if (!gc_try_setmark(new_obj, &tag, &bits))
+        if (!gc_try_setmark(new_obj, &tag, &bits)) {
             continue;
+        }
     #ifdef JL_DEBUG_BUILD
         if (new_obj == gc_findval)
             jl_raise_debugger();
@@ -2113,12 +2053,11 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
         jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
         jl_datatype_t *vt = (jl_datatype_t*)tag;
         int foreign_alloc = 0;
-        int update_meta = __likely(!meta_updated && !gc_verifying);
-        if (update_meta && (void*)o >= sysimg_base && (void*)o < sysimg_end) {
+        int update_meta = __likely(!gc_verifying);
+        if ((void*)o >= sysimg_base && (void*)o < sysimg_end) {
             foreign_alloc = 1;
             update_meta = 0;
         }
-        meta_updated = 0;
         // Symbols are always marked
         assert(vt != jl_symbol_type);
         if (vt == jl_simplevector_type) {
@@ -2129,10 +2068,13 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
                 gc_setmark(ptls, o, bits, dtsz);
             else if (foreign_alloc)
                 objprofile_count(vt, bits == GC_OLD_MARKED, dtsz);
-            nptr = (l << 2) | (bits & GC_OLD);
+            objary_parent = new_obj;
             objary_begin = data;
             objary_end = data + l;
-            gc_mark_objarray();
+            step = 1;
+            nptr = (l << 2) | (bits & GC_OLD);
+            gc_mark_objarray(ptls, objary_parent, objary_begin
+                             objary_end, step, nptr);
         }
         else if (vt->name == jl_array_typename) {
             jl_array_t *a = (jl_array_t*)new_obj;
@@ -2167,11 +2109,8 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
             else if (flags.how == 3) {
                 jl_value_t *owner = jl_array_data_owner(a);
                 nptr = (1 << 2) | (bits & GC_OLD);
-                int markowner = gc_try_setmark(owner, &nptr, &tag, &bits);
+                gc_try_claim_and_push(mq, owner, &nptr);
                 gc_mark_push_remset(ptls, new_obj, nptr);
-                if (markowner) {
-                    gc_markqueue_push(owner);
-                }
                 continue;
             }
             if (a->data == NULL || jl_array_len(a) == 0)
@@ -2180,10 +2119,13 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
                 if ((jl_datatype_t*)jl_tparam0(vt) == jl_symbol_type)
                     continue;
                 size_t l = jl_array_len(a);
-                nptr = (l << 2) | (bits & GC_OLD);
+                objary_parent = new_obj;
                 objary_begin = (jl_value_t**)a->data;
                 objary_end = objary_begin + l;
-                gc_mark_objarray();
+                step = 1;
+                nptr = (l << 2) | (bits & GC_OLD);
+                gc_mark_objarray(ptls, objary_parent, objary_begin
+                                 objary_end, step, nptr);
             }
             else if (flags.hasptr) {
                 jl_datatype_t *et = (jl_datatype_t*)jl_tparam0(vt);
@@ -2191,22 +2133,27 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
                 unsigned npointers = layout->npointers;
                 unsigned elsize = a->elsize / sizeof(jl_value_t*);
                 size_t l = jl_array_len(a);
-                nptr = ((l * npointers) << 2) | (bits & GC_OLD);
+                objary_parent = new_obj;
                 objary_begin = (jl_value_t**)a->data;
                 objary_end = objary_begin + l * elsize;
+                step = elsize;
+                nptr = ((l * npointers) << 2) | (bits & GC_OLD);
                 if (npointers == 1) { // TODO: detect anytime time stride is uniform?
                     objary_begin += layout->first_ptr;
-                    gc_mark_objarray();
+                    gc_mark_objarray(ptls, objary_parent, objary_begin
+                                     objary_end, step, nptr);
                 }
                 else if (layout->fielddesc_type == 0) {
                     obj8_begin = (uint8_t*)jl_dt_layout_ptrs(layout);
                     obj8_end = obj8_begin + npointers;
-                    gc_mark_array8();
+                    gc_mark_array8(ptls, objary_begin, objary_end, objary_parent,
+                                   obj8_begin, obj8_end, nptr);
                 }
                 else if (layout->fielddesc_type == 1) {
                     obj16_begin = (uint16_t*)jl_dt_layout_ptrs(layout);
                     obj16_end = obj16_begin + npointers;
-                    gc_mark_array16();
+                    gc_mark_array16(ptls, objary_begin, objary_end, objary_parent,
+                                    obj16_begin, obj16_end, nptr);
                 }
                 else {
                     assert(0 && "unimplemented");
@@ -2218,11 +2165,12 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
                 gc_setmark(ptls, o, bits, sizeof(jl_module_t));
             else if (foreign_alloc)
                 objprofile_count(vt, bits == GC_OLD_MARKED, sizeof(jl_module_t));
-            jl_module_t *m = (jl_module_t*)new_obj;
-            jl_binding_t **table = (jl_binding_t**)m->bindings.table;
-            size_t bsize = m->bindings.size;
-            nptr = ((bsize + m->usings.len + 1) << 2) | (bits & GC_OLD);
-            gc_mark_module_binding();
+            mb_parent = (jl_module_t*)new_obj;
+            mb_begin = (jl_binding_t**)mb_parent->bindings.table + 1;
+            size_t bsize = mb_parent->bindings.size;
+            mb_end = (jl_binding_t**)mb_parent->bindings.table + bsize;
+            nptr = ((bsize + mb_parent->usings.len + 1) << 2) | (bits & GC_OLD);
+            gc_mark_module_binding(ptls, mb_parent, mb_begin, mb_end, nptr);
         }
         else if (vt == jl_task_type) {
             if (update_meta)
@@ -2243,7 +2191,6 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
                 gc_setmark_buf_(ptls, stkbuf, bits, ta->bufsz);
     #endif
             jl_gcframe_t *s = ta->gcstack;
-            nroots;
             offset = 0;
             lb = 0;
             ub = (uintptr_t)-1;
@@ -2260,25 +2207,26 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
             if (s) {
                 nroots = gc_read_stack(&s->nroots, offset, lb, ub);
                 assert(nroots <= UINT32_MAX);
-                // call mark_scan_stack
+                gc_mark_stack(ptls, s, nroots, offset, lb, ub);
             }
             else if (ta->excstack) {
                 gc_setmark_buf_(ptls, ta->excstack, bits, sizeof(jl_excstack_t) +
                                 sizeof(uintptr_t)*ta->excstack->reserved_size);
-                // call mark_scan_excstack
+                excstack = ta->excstack;
+                itr = ta->excstack->top;
+                gc_mark_excstack(ptls, excstack, itr);
             }
             else {
                 const jl_datatype_layout_t *layout = jl_task_type->layout;
                 assert(layout->fielddesc_type == 0);
                 assert(layout->nfields > 0);
                 uint32_t npointers = layout->npointers;
+                obj8_parent = (jl_value_t*)ta;
                 obj8_begin = (uint8_t*)jl_dt_layout_ptrs(layout);
                 obj8_end = obj8_begin + npointers;
                 // assume tasks always reference young objects: set lowest bit
                 nptr = (npointers << 2) | 1 | bits;
-                obj8 = (gc_mark_obj8_t*)sp->data;
-                obj8_parent = (char*)ta;
-                gc_mark_obj8();
+                gc_mark_obj8(ptls, obj8_parent, obj8_begin, obj8_end, nptr);
             }
         }
         else if (vt == jl_string_type) {
@@ -2290,7 +2238,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
         }
         else {
             if (__unlikely(!jl_is_datatype(vt)))
-                gc_assert_datatype_fail(ptls, vt, sp);
+                gc_assert_datatype_fail(ptls, vt, mq);
             size_t dtsz = jl_datatype_size(vt);
             if (update_meta)
                 gc_setmark(ptls, o, bits, dtsz);
@@ -2306,25 +2254,26 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
             assert((layout->nfields > 0 || layout->fielddesc_type == 3) 
                    && "opaque types should have been handled specially");
             if (layout->fielddesc_type == 0) {
-                obj8_parent = (char*)new_obj;
+                obj8_parent = new_obj;
                 obj8_begin = (uint8_t*)jl_dt_layout_ptrs(layout);
                 obj8_end = obj8_begin + npointers;
                 assert(obj8_begin < obj8_end);
-                gc_mark_obj8();
+                gc_mark_obj8(ptls, obj8_parent, obj8_begin, obj8_end);
             }
             else if (layout->fielddesc_type == 1) {
                 obj16_parent = (char*)new_obj;
                 obj16_begin = (uint16_t*)jl_dt_layout_ptrs(layout);
                 obj16_end = obj16_begin + npointers;
                 assert(obj16_begin < obj16_end);
-                gc_mark_obj16();
+                gc_mark_obj16(ptls, obj16_parent, obj8_begin, obj8_end);
             }
             else if (layout->fielddesc_type == 2) {
                 // This is very uncommon
                 // Do not do store to load forwarding to save some code size
-                uint32_t *obj32_begin = (uint32_t*)jl_dt_layout_ptrs(layout);
-                uint32_t *obj32_end = obj32_begin + npointers;
-                gc_mark_obj32();
+                obj32_parent = (char*)new_obj;
+                obj32_begin = (uint32_t*)jl_dt_layout_ptrs(layout);
+                obj32_end = obj32_begin + npointers;
+                gc_mark_obj32(ptls, obj32_parent, obj32_begin, obj32_end);
             }
             else {
                 assert(layout->fielddesc_type == 3);
@@ -2338,7 +2287,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
     }
 }
 
-static void jl_gc_queue_thread_local(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp,
+static void jl_gc_queue_thread_local(jl_gc_mark_cache_t *gc_cache, jl_gc_markqueue_t *mq,
                                      jl_ptls_t ptls2)
 {
     gc_mark_queue_obj(gc_cache, sp, jl_atomic_load_relaxed(&ptls2->current_task));
@@ -2354,7 +2303,7 @@ static void jl_gc_queue_thread_local(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp
 extern jl_value_t *cmpswap_names JL_GLOBALLY_ROOTED;
 
 // mark the initial root set
-static void mark_roots(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp)
+static void mark_roots(jl_gc_mark_cache_t *gc_cache, jl_gc_markqueue_t *mq)
 {
     // modules
     gc_mark_queue_obj(gc_cache, sp, jl_main_module);
@@ -2535,7 +2484,7 @@ static void jl_gc_premark(jl_ptls_t ptls2)
     }
 }
 
-static void jl_gc_queue_remset(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp, jl_ptls_t ptls2)
+static void jl_gc_queue_remset(jl_gc_mark_cache_t *gc_cache, jl_gc_markqueue_t *mq, jl_ptls_t ptls2)
 {
     size_t len = ptls2->heap.last_remset->len;
     void **items = ptls2->heap.last_remset->items;
@@ -2557,7 +2506,7 @@ static void jl_gc_queue_remset(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp
     ptls2->heap.rem_bindings.len = n_bnd_refyoung;
 }
 
-static void jl_gc_queue_bt_buf(jl_gc_mark_cache_t *gc_cache, jl_gc_mark_sp_t *sp, jl_ptls_t ptls2)
+static void jl_gc_queue_bt_buf(jl_gc_mark_cache_t *gc_cache, jl_gc_markqueue_t *mq, jl_ptls_t ptls2)
 {
     jl_bt_element_t *bt_data = ptls2->bt_data;
     size_t bt_size = ptls2->bt_size;
@@ -2578,7 +2527,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 {
     combine_thread_gc_counts(&gc_num);
 
-    jl_gc_mark_sp_t *sp = &ptls->gc_mark_sp;
+    jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
 
     uint64_t gc_start_time = jl_hrtime();
@@ -2899,12 +2848,12 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
     errno = last_errno;
 }
 
-void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_mark_sp_t *sp)
+void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_markqueue_t *mq)
 {
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
     for (size_t i = 0; i < jl_n_threads; i++)
         jl_gc_queue_thread_local(gc_cache, sp, jl_all_tls_states[i]);
-    mark_roots(gc_cache, sp);
+    mark_roots(gc_cache, mq);
 }
 
 // allocator entry points
@@ -2945,7 +2894,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     gc_cache->nbig_obj = 0;
     size_t init_size = 1024;
 
-    jl_gc_mark_sp_t *sp = &ptls->gc_mark_sp;
+    jl_gc_markqueue_t *mq = &ptls->mark_queue;
 
     sp->pc = sp->pc_start = (void**)malloc_s(init_size * sizeof(void*));
     sp->pc_end = sp->pc_start + init_size;

@@ -258,7 +258,7 @@ typedef struct _jl_tls_states_t {
 #endif
     jl_thread_t system_id;
     arraylist_t finalizers;
-    jl_gc_mark_sp_t gc_mark_sp;
+    jl_gc_markqueue_t mark_queue;
     jl_gc_mark_cache_t gc_cache;
     arraylist_t sweep_objs;
     // Saved exception for previous *external* API call or NULL if cleared.
