@@ -716,18 +716,9 @@ STATIC_INLINE void gc_queue_big_marked(jl_ptls_t ptls, bigval_t *hdr,
     ptls->gc_cache.nbig_obj = nobj + 1;
 }
 
-// `gc_setmark_tag` can be called concurrently on multiple threads.
-// In all cases, the function atomically sets the mark bits and returns
-// the GC bits set as well as if the tag was unchanged by this thread.
-// All concurrent calls on the same object are guaranteed to be setting the
-// bits to the same value.
-// For normal objects, this is the bits with only `GC_MARKED` changed to `1`
-// For buffers, this is the bits of the owner object.
-// For `mark_reset_age`, this is `GC_MARKED` with `GC_OLD` cleared.
-// The return value is `1` if the object was not marked before.
-// Returning `0` can happen if another thread marked it in parallel.
+// TODO: write docstring
 STATIC_INLINE int gc_setmark_tag(jl_taggedvalue_t *o, uint8_t mark_mode,
-                                 uintptr_t tag, uint8_t *bits) JL_NOTSAFEPOINT
+                                 uintptr_t tag) JL_NOTSAFEPOINT
 {
     assert(!gc_marked(tag));
     assert(gc_marked(mark_mode));
@@ -742,10 +733,14 @@ STATIC_INLINE int gc_setmark_tag(jl_taggedvalue_t *o, uint8_t mark_mode,
         tag = tag | mark_mode;
         assert((tag & 0x3) == mark_mode);
     }
-    *bits = mark_mode;
-    tag = jl_atomic_fetch_or((_Atomic(uintptr_t)*)&o->header, tag);
+    tag = jl_atomic_exchange_relaxed((_Atomic(uintptr_t)*)&o->header, tag);
     verify_val(jl_valueof(o));
     return !gc_marked(tag);
+}
+
+STATIC_INLINE uint8_t gc_compute_bits(uintptr_t tag)
+{
+    return gc_old(tag) ? GC_OLD_MARKED : GC_MARKED;
 }
 
 // This function should be called exactly once during marking for each big
@@ -833,7 +828,8 @@ STATIC_INLINE void gc_setmark_buf_(jl_ptls_t ptls, void *o, uint8_t mark_mode, s
     // This should be accurate most of the time but there might be corner cases
     // where the size estimate is a little off so we do a pool lookup to make
     // sure.
-    if (__likely(gc_setmark_tag(buf, mark_mode, tag, &bits)) && !gc_verifying) {
+    if (__likely(gc_setmark_tag(buf, mark_mode, tag)) && !gc_verifying) {
+        bits = gc_compute_bits(tag);
         if (minsz <= GC_MAX_SZCLASS) {
             jl_gc_pagemeta_t *page = page_metadata(buf);
             if (page) {
@@ -1703,32 +1699,12 @@ STATIC_INLINE int gc_try_claim_and_push(jl_gc_markqueue_t *mq, jl_value_t *obj,
     if (!obj)
         return 0;
     jl_taggedvalue_t *o = jl_astaggedvalue(obj);
-    // Third `gc` bit in the header indicates whether `obj`
-    // has been already enqueued
-    uint8_t enqueued = (jl_atomic_fetch_or((_Atomic(uintptr_t)*)(&o->header), 0x4) & 0x4);
-    if (!enqueued)
-        gc_markqueue_push(mq, obj);
-    if (!gc_old(o->header))
-        *nptr |= 1;
-    return !enqueued;
-}
-
-// Check if the reference is non-NULL and atomically set the mark bit.
-// Return the tag (with GC bits cleared) and the GC bits in `*ptag` and `*pbits`.
-// Return whether the object needs to be scanned / have metadata updated.
-STATIC_INLINE int gc_try_setmark(jl_value_t *obj, uintptr_t *ptag, 
-                                 uint8_t *pbits) JL_NOTSAFEPOINT
-{
-    if (!obj)
-        return 0;
-    jl_taggedvalue_t *o = jl_astaggedvalue(obj);
     uintptr_t tag = o->header;
-    if (!gc_marked(tag)) {
-        uint8_t bits;
-        int res = gc_setmark_tag(o, GC_MARKED, tag, &bits);
-        *ptag = tag & ~(uintptr_t)0xf;
-        *pbits = bits;
-        return __likely(res);
+    if (gc_old(tag))
+        *nptr |= 1;
+    if (!gc_marked(tag) && gc_setmark_tag(o, GC_MARKED, tag)) {
+        gc_markqueue_push(mq, obj);
+        return 1;
     }
     return 0;
 }
@@ -1965,9 +1941,10 @@ STATIC_INLINE void gc_mark_module_binding(jl_ptls_t ptls, jl_module_t *mb_parent
         if ((void*)b >= sysimg_base && (void*)b < sysimg_end) {
             jl_taggedvalue_t *buf = jl_astaggedvalue(b);
             uintptr_t tag = buf->header;
-            uint8_t bits;
-            if (!gc_marked(tag))
-                gc_setmark_tag(buf, GC_OLD_MARKED, tag, &bits);
+            if (!gc_marked(tag)) {
+                gc_setmark_tag(buf, GC_OLD_MARKED, tag);
+                bits = gc_compute_bits(tag);
+            }
         }
         else {
             gc_setmark_buf_(ptls, b, bits, sizeof(jl_binding_t));
@@ -2022,7 +1999,6 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
 
     jl_value_t *new_obj = NULL;
     uintptr_t nptr = 0;
-    uintptr_t tag = 0;
     uint8_t bits = 0;
     int meta_updated = 0;
 
@@ -2076,14 +2052,13 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
             // TODO: steal from another thread
             return;
         }
-        if (!gc_try_setmark(new_obj, &tag, &bits))
-            meta_updated = 1;
     #ifdef JL_DEBUG_BUILD
         if (new_obj == gc_findval)
             jl_raise_debugger();
     #endif
         jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
-        jl_datatype_t *vt = (jl_datatype_t*)tag;
+        jl_datatype_t *vt = (jl_datatype_t*)(o->header & ~(uintptr_t)0xf);
+        bits = gc_compute_bits(o->header);
         int foreign_alloc = 0;
         int update_meta = __likely(!meta_updated && !gc_verifying);
         if (update_meta && (void*)o >= sysimg_base && (void*)o < sysimg_end) {
@@ -2340,7 +2315,6 @@ static void mark_roots(jl_gc_markqueue_t *mq)
 {
     // modules
     gc_mark_queue_obj(mq, jl_main_module);
-
     // invisible builtin values
     if (jl_an_empty_vec_any)
         gc_mark_queue_obj(mq, jl_an_empty_vec_any);
@@ -2361,7 +2335,6 @@ static void mark_roots(jl_gc_markqueue_t *mq)
         gc_mark_queue_obj(mq, jl_all_methods);
     if (_jl_debug_method_invalidation)
         gc_mark_queue_obj(mq, _jl_debug_method_invalidation);
-
     // constants
     gc_mark_queue_obj(mq, jl_emptytuple_type);
     if (cmpswap_names)
