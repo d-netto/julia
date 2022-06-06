@@ -109,6 +109,8 @@ STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
     if (mq->current == mq->start)
         return NULL;
     jl_value_t *obj = *(mq->current - 1);
+    // jl_static_show((JL_STREAM*)STDERR_FILENO, obj);
+    // jl_safe_printf("\n~~~~~~~\n");
     mq->current--;
     return obj;
 }
