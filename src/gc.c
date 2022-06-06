@@ -1999,6 +1999,8 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
             foreign_alloc = 1;
             update_meta = 0;
         }
+        // Symbols are always marked
+        assert(vt != jl_symbol_type);
         if (vt == jl_simplevector_type) {
             size_t l = jl_svec_len(new_obj);
             jl_value_t **data = jl_svec_data(new_obj);
@@ -2051,7 +2053,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
                 gc_mark_push_remset(ptls, new_obj, nptr);
                 continue;
             }
-            if (a->data == NULL || jl_array_len(a) == 0)
+            if (!a->data || jl_array_len(a) == 0)
                 continue;
             if (flags.ptrarray) {
                 if ((jl_datatype_t *)jl_tparam0(vt) == jl_symbol_type)
@@ -2128,7 +2130,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
                 gc_setmark_buf_(ptls, stkbuf, bits, ta->bufsz);
 #endif
             jl_gcframe_t *s = ta->gcstack;
-            uint32_t nroots;
+            size_t nroots;
             uintptr_t offset = 0;
             uintptr_t lb = 0;
             uintptr_t ub = (uintptr_t)-1;
@@ -2145,7 +2147,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
             if (s) {
                 nroots = gc_read_stack(&s->nroots, offset, lb, ub);
                 assert(nroots <= UINT32_MAX);
-                gc_mark_stack(ptls, s, nroots, offset, lb, ub);
+                gc_mark_stack(ptls, s, (uint32_t)nroots, offset, lb, ub);
             }
             if (ta->excstack) {
                 jl_excstack_t *excstack = ta->excstack;
