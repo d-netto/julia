@@ -717,7 +717,7 @@ STATIC_INLINE void gc_queue_big_marked(jl_ptls_t ptls, bigval_t *hdr,
 }
 
 // TODO: write docstring
-STATIC_INLINE int gc_setmark_tag(jl_taggedvalue_t *o, uint8_t mark_mode) JL_NOTSAFEPOINT
+STATIC_INLINE int gc_try_setmark_tag(jl_taggedvalue_t *o, uint8_t mark_mode) JL_NOTSAFEPOINT
 {
     assert(gc_marked(mark_mode));
     uintptr_t tag = o->header;
@@ -821,7 +821,7 @@ STATIC_INLINE void gc_setmark_buf_(jl_ptls_t ptls, void *o, uint8_t mark_mode, s
     // This should be accurate most of the time but there might be corner cases
     // where the size estimate is a little off so we do a pool lookup to make
     // sure.
-    if (__likely(gc_setmark_tag(buf, mark_mode)) && !gc_verifying) {
+    if (__likely(gc_try_setmark_tag(buf, mark_mode)) && !gc_verifying) {
         bits = (gc_old(buf->header) && !mark_reset_age) ? GC_OLD_MARKED : GC_MARKED;
         if (minsz <= GC_MAX_SZCLASS) {
             jl_gc_pagemeta_t *page = page_metadata(buf);
@@ -1713,7 +1713,7 @@ STATIC_INLINE int gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
     jl_taggedvalue_t *o = jl_astaggedvalue(obj);
     if (gc_old(o->header) && nptr)
         *nptr |= 1;
-    if (gc_setmark_tag(o, GC_MARKED)) {
+    if (gc_try_setmark_tag(o, GC_MARKED)) {
         gc_markqueue_push(mq, obj);
         return 1;
     }
@@ -1838,7 +1838,6 @@ STATIC_INLINE void gc_mark_stack(jl_ptls_t ptls, jl_gcframe_t *s, uint32_t nroot
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     uint32_t nr = nroots >> 2;
-    uintptr_t nptr = 0;
     while (1) {
         jl_value_t ***rts = (jl_value_t ***)(((void **)s) + 2);
         for (uint32_t i = 0; i < nr; i++) {
@@ -1854,7 +1853,7 @@ STATIC_INLINE void gc_mark_stack(jl_ptls_t ptls, jl_gcframe_t *s, uint32_t nroot
                     i++;
                 }
             }
-            gc_try_claim_and_push(mq, new_obj, &nptr);
+            gc_try_claim_and_push(mq, new_obj, NULL);
         }
         s = (jl_gcframe_t *)gc_read_stack(&s->prev, offset, lb, ub);
         if (!s)
@@ -1907,8 +1906,7 @@ STATIC_INLINE void gc_mark_module_binding(jl_ptls_t ptls, jl_module_t *mb_parent
             continue;
         if ((void *)b >= sysimg_base && (void *)b < sysimg_end) {
             jl_taggedvalue_t *buf = jl_astaggedvalue(b);
-            if (gc_setmark_tag(buf, GC_OLD_MARKED))
-                bits = (gc_old(buf->header) && !mark_reset_age) ? GC_OLD_MARKED : GC_MARKED;
+            gc_try_setmark_tag(buf, GC_OLD_MARKED);
         }
         else {
             gc_setmark_buf_(ptls, b, bits, sizeof(jl_binding_t));
@@ -1927,8 +1925,19 @@ STATIC_INLINE void gc_mark_module_binding(jl_ptls_t ptls, jl_module_t *mb_parent
     }
     gc_try_claim_and_push(mq, (jl_value_t *)mb_parent->parent, &nptr);
     size_t nusings = mb_parent->usings.len;
-    if (nusings == 0)
+    if (nusings > 0) {
+        // this is only necessary because bindings for "using" modules
+        // are added only when accessed. therefore if a module is replaced
+        // after "using" it but before accessing it, this array might
+        // contain the only reference.
+        jl_value_t *obj_parent = (jl_value_t *)mb_parent;
+        jl_value_t **objary_begin = (jl_value_t **)mb_parent->usings.items;
+        jl_value_t **objary_end = objary_begin + nusings;
+        gc_mark_objarray(ptls, obj_parent, objary_begin, objary_end, 1, nptr);
+    }
+    else {
         gc_mark_push_remset(ptls, (jl_value_t *)mb_parent, nptr);
+    }
 }
 
 // TODO: write docstring
