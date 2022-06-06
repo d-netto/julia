@@ -2468,10 +2468,9 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     uint64_t start_mark_time = jl_hrtime();
 
     // 1. fix GC bits of objects in the remset.
-    for (int t_i = 0; t_i < jl_n_threads; t_i++) 
-        gc_premark(jl_all_tls_states[t_i]);
-    for (int t_i = 0; t_i < jl_n_threads; t_i++) {
+    for (int t_i = 0; t_i < jl_n_threads; t_i++)  {
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
+        gc_premark(jl_all_tls_states[t_i]);
         // 2. mark every object in the `last_remsets` and `rem_binding`
         gc_queue_remset(mq, ptls2);
     }
