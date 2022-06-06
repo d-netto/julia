@@ -1733,7 +1733,6 @@ STATIC_INLINE int gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
 STATIC_INLINE void gc_mark_obj8(jl_ptls_t ptls, jl_value_t *obj8_parent, uint8_t *obj8_begin, 
                                 uint8_t *obj8_end, uintptr_t nptr) JL_NOTSAFEPOINT
 {
-    fprintf(stderr, "in gc_mark_obj8...\n");
     (void)jl_assume(obj8_begin < obj8_end);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
@@ -1751,7 +1750,6 @@ STATIC_INLINE void gc_mark_obj8(jl_ptls_t ptls, jl_value_t *obj8_parent, uint8_t
 STATIC_INLINE void gc_mark_obj16(jl_ptls_t ptls, jl_value_t *obj16_parent, uint16_t *obj16_begin, 
                                  uint16_t *obj16_end, uintptr_t nptr) JL_NOTSAFEPOINT
 {
-    fprintf(stderr, "in gc_mark_obj16...\n");
     (void)jl_assume(obj16_begin < obj16_end);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
@@ -1769,7 +1767,6 @@ STATIC_INLINE void gc_mark_obj16(jl_ptls_t ptls, jl_value_t *obj16_parent, uint1
 STATIC_INLINE void gc_mark_obj32(jl_ptls_t ptls, jl_value_t *obj32_parent, uint32_t *obj32_begin, 
                                  uint32_t *obj32_end, uintptr_t nptr) JL_NOTSAFEPOINT
 {
-    fprintf(stderr, "in gc_mark_obj32...\n");
     (void)jl_assume(obj32_begin < obj32_end);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
@@ -1788,7 +1785,6 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent,
                                     jl_value_t **obj_begin, jl_value_t **obj_end, 
                                     uint32_t step, uintptr_t nptr) JL_NOTSAFEPOINT
 {
-    fprintf(stderr, "in gc_mark_objarray...\n");
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     for (; obj_begin < obj_end; obj_begin += step) {
@@ -1806,7 +1802,6 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t **ary8_begin, jl_va
                                   jl_value_t *ary8_parent, uint8_t *elem_begin, uint8_t *elem_end, 
                                   uintptr_t nptr) JL_NOTSAFEPOINT
 {
-    fprintf(stderr, "in gc_mark_array8...\n");
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     size_t elsize = ((jl_array_t*)ary8_parent)->elsize / sizeof(jl_value_t*);
@@ -1827,7 +1822,6 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t **ary16_begin, jl_
                                    jl_value_t *ary16_parent, uint16_t *elem_begin, uint16_t *elem_end, 
                                    uintptr_t nptr) JL_NOTSAFEPOINT
 {
-    fprintf(stderr, "in gc_mark_array16...\n");
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     size_t elsize = ((jl_array_t*)ary16_parent)->elsize / sizeof(jl_value_t*);
@@ -1847,7 +1841,6 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t **ary16_begin, jl_
 STATIC_INLINE void gc_mark_stack(jl_ptls_t ptls, jl_gcframe_t *s, uint32_t nroots,
                                  uintptr_t offset, uintptr_t lb, uintptr_t ub) JL_NOTSAFEPOINT
 {
-    fprintf(stderr, "in gc_mark_stack...\n");
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     uint32_t nr = nroots >> 2;
@@ -1870,13 +1863,13 @@ STATIC_INLINE void gc_mark_stack(jl_ptls_t ptls, jl_gcframe_t *s, uint32_t nroot
             gc_try_claim_and_push(mq, new_obj, &nptr);
         }
         s = (jl_gcframe_t*)gc_read_stack(&s->prev, offset, lb, ub);
-        if (s) {
-            uintptr_t new_nroots = gc_read_stack(&s->nroots, offset, lb, ub);
-            assert(new_nroots <= UINT32_MAX);
-            nroots = (uint32_t)new_nroots;
-            nr = nroots >> 2;
-            continue;
-        }
+        if (!s)
+            break;
+        uintptr_t new_nroots = gc_read_stack(&s->nroots, offset, lb, ub);
+        assert(new_nroots <= UINT32_MAX);
+        nroots = (uint32_t)new_nroots;
+        nr = nroots >> 2;
+        continue;
     }
 }
 
@@ -1884,7 +1877,6 @@ STATIC_INLINE void gc_mark_stack(jl_ptls_t ptls, jl_gcframe_t *s, uint32_t nroot
 STATIC_INLINE void gc_mark_excstack(jl_ptls_t ptls, jl_excstack_t *excstack, 
                                     size_t itr) JL_NOTSAFEPOINT
 {
-    fprintf(stderr, "in gc_mark_excstack...\n");
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     while (itr > 0) {
@@ -1913,12 +1905,10 @@ STATIC_INLINE void gc_mark_excstack(jl_ptls_t ptls, jl_excstack_t *excstack,
 
 // Mark a module binding
 STATIC_INLINE void gc_mark_module_binding(jl_ptls_t ptls, jl_module_t *mb_parent, jl_binding_t **mb_begin, 
-                                          jl_binding_t ** mb_end, uint8_t bits) JL_NOTSAFEPOINT
+                                          jl_binding_t **mb_end, uintptr_t nptr, uint8_t bits) JL_NOTSAFEPOINT
 {
-    fprintf(stderr, "in gc_mark_module_binding...\n");
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
-    uintptr_t nptr = 0;
-    for (; mb_begin < mb_end; mb_begin++) {
+    for (; mb_begin < mb_end; mb_begin += 2) {
         jl_binding_t *b = *mb_begin;
         if (b == (jl_binding_t*)HT_NOTFOUND)
             continue;
@@ -1942,12 +1932,11 @@ STATIC_INLINE void gc_mark_module_binding(jl_ptls_t ptls, jl_module_t *mb_parent
                            &b->value, "binding(%s)", jl_symbol_name(b->name));
             gc_try_claim_and_push(mq, value, &nptr);
         }
-        fprintf(stderr, "%p, %p\n", b, globalref);
         gc_try_claim_and_push(mq, globalref, &nptr);
     }
     gc_try_claim_and_push(mq, (jl_value_t*)mb_parent->parent, &nptr);
     size_t nusings = mb_parent->usings.len;
-    if (nusings > 0)
+    if (nusings == 0)
         gc_mark_push_remset(ptls, (jl_value_t*)mb_parent, nptr);
 }
 
@@ -2174,7 +2163,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
             size_t bsize = mb_parent->bindings.size;
             mb_end = (jl_binding_t**)mb_parent->bindings.table + bsize;
             nptr = ((bsize + mb_parent->usings.len + 1) << 2) | (bits & GC_OLD);
-            gc_mark_module_binding(ptls, mb_parent, mb_begin, mb_end, nptr);
+            gc_mark_module_binding(ptls, mb_parent, mb_begin, mb_end, nptr, bits);
         }
         else if (vt == jl_task_type) {
             if (update_meta)
@@ -2213,25 +2202,23 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
                 assert(nroots <= UINT32_MAX);
                 gc_mark_stack(ptls, s, nroots, offset, lb, ub);
             }
-            else if (ta->excstack) {
+            if (ta->excstack) {
                 gc_setmark_buf_(ptls, ta->excstack, bits, sizeof(jl_excstack_t) +
                                 sizeof(uintptr_t)*ta->excstack->reserved_size);
                 excstack = ta->excstack;
                 itr = ta->excstack->top;
                 gc_mark_excstack(ptls, excstack, itr);
             }
-            else {
-                const jl_datatype_layout_t *layout = jl_task_type->layout;
-                assert(layout->fielddesc_type == 0);
-                assert(layout->nfields > 0);
-                uint32_t npointers = layout->npointers;
-                obj8_parent = (jl_value_t*)ta;
-                obj8_begin = (uint8_t*)jl_dt_layout_ptrs(layout);
-                obj8_end = obj8_begin + npointers;
-                // assume tasks always reference young objects: set lowest bit
-                nptr = (npointers << 2) | 1 | bits;
-                gc_mark_obj8(ptls, obj8_parent, obj8_begin, obj8_end, nptr);
-            }
+            const jl_datatype_layout_t *layout = jl_task_type->layout;
+            assert(layout->fielddesc_type == 0);
+            assert(layout->nfields > 0);
+            uint32_t npointers = layout->npointers;
+            obj8_parent = (jl_value_t*)ta;
+            obj8_begin = (uint8_t*)jl_dt_layout_ptrs(layout);
+            obj8_end = obj8_begin + npointers;
+            // assume tasks always reference young objects: set lowest bit
+            nptr = (npointers << 2) | 1 | bits;
+            gc_mark_obj8(ptls, obj8_parent, obj8_begin, obj8_end, nptr);
         }
         else if (vt == jl_string_type) {
             size_t dtsz = jl_string_len(new_obj) + sizeof(size_t) + 1;
