@@ -1704,20 +1704,17 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
 }
 
 // TODO: write docstring
-STATIC_INLINE int gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
-                                        uintptr_t *nptr) JL_NOTSAFEPOINT
+STATIC_INLINE void gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
+                                         uintptr_t *nptr) JL_NOTSAFEPOINT
 {
     if (!_obj)
-        return 0;
+        return;
     jl_value_t *obj = (jl_value_t *)jl_assume(_obj);
     jl_taggedvalue_t *o = jl_astaggedvalue(obj);
     if (gc_old(o->header) && nptr)
         *nptr |= 1;
-    if (gc_try_setmark_tag(o, GC_MARKED)) {
+    if (gc_try_setmark_tag(o, GC_MARKED))
         gc_markqueue_push(mq, obj);
-        return 1;
-    }
-    return 0;
 }
 
 // TODO: write docstring
@@ -1789,8 +1786,8 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent,
 }
 
 // TODO: write docstring
-STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t **ary8_begin,
-                                  jl_value_t **ary8_end, jl_value_t *ary8_parent,
+STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent,
+                                  jl_value_t **ary8_begin, jl_value_t **ary8_end,
                                   uint8_t *elem_begin, uint8_t *elem_end,
                                   uintptr_t nptr) JL_NOTSAFEPOINT
 {
@@ -1810,8 +1807,8 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t **ary8_begin,
 }
 
 // TODO: write docstring
-STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t **ary16_begin,
-                                   jl_value_t **ary16_end, jl_value_t *ary16_parent,
+STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent, 
+                                   jl_value_t **ary16_begin, jl_value_t **ary16_end,
                                    uint16_t *elem_begin, uint16_t *elem_end,
                                    uintptr_t nptr) JL_NOTSAFEPOINT
 {
@@ -1875,7 +1872,7 @@ STATIC_INLINE void gc_mark_excstack(jl_ptls_t ptls, jl_excstack_t *excstack,
         size_t bt_size = jl_excstack_bt_size(excstack, itr);
         jl_bt_element_t *bt_data = jl_excstack_bt_data(excstack, itr);
         for (size_t bt_index = 0; bt_index < bt_size;
-            bt_index += jl_bt_entry_size(bt_data + bt_index)) {
+             bt_index += jl_bt_entry_size(bt_data + bt_index)) {
             jl_bt_element_t *bt_entry = bt_data + bt_index;
             if (jl_bt_is_native(bt_entry))
                 continue;
@@ -1889,6 +1886,7 @@ STATIC_INLINE void gc_mark_excstack(jl_ptls_t ptls, jl_excstack_t *excstack,
         }
         // The exception comes last - mark it
         new_obj = jl_excstack_exception(excstack, itr);
+        itr = jl_excstack_next(excstack, itr);
         gc_try_claim_and_push(mq, new_obj, NULL);
     }
 }
@@ -1976,6 +1974,7 @@ JL_DLLEXPORT void jl_gc_mark_queue_objarray(jl_ptls_t ptls, jl_value_t *parent,
     return;
 }
 
+// TODO: write docstring
 JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
 {
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
@@ -2084,13 +2083,13 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
                 else if (layout->fielddesc_type == 0) {
                     uint8_t *obj8_begin = (uint8_t *)jl_dt_layout_ptrs(layout);
                     uint8_t *obj8_end = obj8_begin + npointers;
-                    gc_mark_array8(ptls, objary_begin, objary_end, objary_parent,
+                    gc_mark_array8(ptls, objary_parent, objary_begin, objary_end,
                                    obj8_begin, obj8_end, nptr);
                 }
                 else if (layout->fielddesc_type == 1) {
                     uint16_t *obj16_begin = (uint16_t *)jl_dt_layout_ptrs(layout);
                     uint16_t *obj16_end = obj16_begin + npointers;
-                    gc_mark_array16(ptls, objary_begin, objary_end, objary_parent,
+                    gc_mark_array16(ptls, objary_parent, objary_begin, objary_end,
                                     obj16_begin, obj16_end, nptr);
                 }
                 else {
@@ -2275,7 +2274,8 @@ static void gc_queue_remset(jl_gc_markqueue_t *mq, jl_ptls_t ptls2)
         // A null pointer can happen here when the binding is cleaned up
         // as an exception is thrown after it was already queued (#10221)
         jl_value_t *v = jl_atomic_load_relaxed(&ptr->value);
-        if (v && gc_try_claim_and_push(mq, v, NULL)) {
+        gc_try_claim_and_push(mq, v, NULL);
+        if (v && !gc_old(jl_astaggedvalue(v)->header)) {
             items[n_bnd_refyoung] = ptr;
             n_bnd_refyoung++;
         }
@@ -2317,8 +2317,7 @@ static void gc_mark_roots(jl_gc_markqueue_t *mq)
     gc_try_claim_and_push(mq, jl_anytuple_type_type, NULL);
     for (size_t i = 0; i < N_CALL_CACHE; i++) {
         jl_typemap_entry_t *v = jl_atomic_load_relaxed(&call_cache[i]);
-        if (v)
-            gc_try_claim_and_push(mq, v, NULL);
+        gc_try_claim_and_push(mq, v, NULL);
     }
     if (jl_all_methods)
         gc_try_claim_and_push(mq, jl_all_methods, NULL);
