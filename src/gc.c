@@ -1761,8 +1761,8 @@ STATIC_INLINE void gc_mark_obj32(jl_ptls_t ptls, char *obj32_parent, uint32_t *o
     for (; obj32_begin < obj32_end; obj32_begin++) {
         new_obj = ((jl_value_t **)obj32_parent)[*obj32_begin];
         if (new_obj)
-            verify_parent2("object", parent, &new_obj, "field(%d)",
-                           gc_slot_to_fieldidx(parent, &new_obj));
+            verify_parent2("object", obj32_parent, &new_obj, "field(%d)",
+                           gc_slot_to_fieldidx(obj32_parent, &new_obj));
         gc_try_claim_and_push(mq, new_obj, &nptr);
     }
     gc_mark_push_remset(ptls, (jl_value_t *)obj32_parent, nptr);
@@ -1983,7 +1983,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
         // No more objects to mark
         if (!new_obj) {
             // TODO: work-stealing comes here...
-            fprintf(stderr, "done with marking!\n");
+            fprintf(stderr, "done with marking...\n");
             return;
         }
 #ifdef JL_DEBUG_BUILD
@@ -2161,7 +2161,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
             assert(layout->fielddesc_type == 0);
             assert(layout->nfields > 0);
             uint32_t npointers = layout->npointers;
-            char *obj8_parent = (char *)new_obj;
+            char *obj8_parent = (char *)ta;
             uint8_t *obj8_begin = (uint8_t *)jl_dt_layout_ptrs(layout);
             uint8_t *obj8_end = obj8_begin + npointers;
             // assume tasks always reference young objects: set lowest bit
@@ -2471,10 +2471,10 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 
     // 1. fix GC bits of objects in the remset.
     for (int t_i = 0; t_i < jl_n_threads; t_i++)  {
-        jl_ptls_t ptls2 = jl_all_tls_states[t_i];
         gc_premark(jl_all_tls_states[t_i]);
-        // 2. mark every object in the `last_remsets` and `rem_binding`
-        gc_queue_remset(mq, ptls2);
+    }
+    for (int t_i = 0; t_i < jl_n_threads; t_i++)  {
+        gc_queue_remset(mq, jl_all_tls_states[t_i]);
     }
     // Objects in the remset should already be marked and the GC metadata
     // should already be updated for them

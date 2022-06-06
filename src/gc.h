@@ -108,8 +108,8 @@ STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 {
     if (mq->current == mq->start)
         return NULL;
-    jl_value_t *obj = *(mq->current - 1);
     mq->current--;
+    jl_value_t *obj = *mq->current;
     return obj;
 }
 
@@ -468,7 +468,6 @@ static inline void gc_verify_tags(void)
 {
 }
 #endif
-
 
 #ifdef GC_VERIFY
 extern jl_value_t *lostval;
