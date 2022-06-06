@@ -1877,7 +1877,7 @@ STATIC_INLINE void gc_mark_excstack(jl_ptls_t ptls, jl_excstack_t *excstack,
         size_t bt_size = jl_excstack_bt_size(excstack, itr);
         jl_bt_element_t *bt_data = jl_excstack_bt_data(excstack, itr);
         for (size_t bt_index = 0; bt_index < bt_size;
-             bt_index += jl_bt_entry_size(bt_data + bt_index)) {
+            bt_index += jl_bt_entry_size(bt_data + bt_index)) {
             jl_bt_element_t *bt_entry = bt_data + bt_index;
             if (jl_bt_is_native(bt_entry))
                 continue;
@@ -1886,14 +1886,12 @@ STATIC_INLINE void gc_mark_excstack(jl_ptls_t ptls, jl_excstack_t *excstack,
             size_t njlvals = jl_bt_num_jlvals(bt_entry);
             for (size_t jlval_index = 0; jlval_index < njlvals; jlval_index++) {
                 new_obj = jl_bt_entry_jlvalue(bt_entry, jlval_index);
-                uintptr_t nptr = 0;
-                gc_try_claim_and_push(mq, new_obj, &nptr);
+                gc_try_claim_and_push(mq, new_obj, NULL);
             }
         }
         // The exception comes last - mark it
-        uintptr_t nptr = 0;
         new_obj = jl_excstack_exception(excstack, itr);
-        gc_try_claim_and_push(mq, new_obj, &nptr);
+        gc_try_claim_and_push(mq, new_obj, NULL);
     }
 }
 
@@ -1939,7 +1937,6 @@ STATIC_INLINE void gc_mark_finlist(jl_ptls_t ptls, arraylist_t *list,
 {
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
-    uintptr_t nptr = 0;
     size_t len = list->len;
     if (len <= start)
         return;
@@ -1954,7 +1951,7 @@ STATIC_INLINE void gc_mark_finlist(jl_ptls_t ptls, arraylist_t *list,
             fl_begin++;
             assert(fl_begin < fl_end);
         }
-        gc_try_claim_and_push(mq, new_obj, &nptr);
+        gc_try_claim_and_push(mq, new_obj, NULL);
     }
 }
 
@@ -2464,12 +2461,11 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     uint64_t start_mark_time = jl_hrtime();
 
     // 1. fix GC bits of objects in the remset.
-    for (int t_i = 0; t_i < jl_n_threads; t_i++)
+    for (int t_i = 0; t_i < jl_n_threads; t_i++) 
         gc_premark(jl_all_tls_states[t_i]);
-
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
-        // 2.1. mark every object in the `last_remsets` and `rem_binding`
+        // 2. mark every object in the `last_remsets` and `rem_binding`
         gc_queue_remset(mq, ptls2);
     }
     // Objects in the remset should already be marked and the GC metadata
@@ -2478,13 +2474,13 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
-        // 2.2. mark every thread local root
+        // 3.1. mark every thread local root
         gc_queue_thread_local(mq, ptls2);
-        // 2.3. mark any managed objects in the backtrace buffer
+        // 3.2 mark any managed objects in the backtrace buffer
         gc_queue_bt_buf(mq, ptls2);
     }
 
-    // 3. walk roots
+    // 4. walk roots
     gc_mark_roots(mq);
     if (gc_cblist_root_scanner) {
         gc_invoke_callbacks(jl_gc_cb_root_scanner_t,
@@ -2502,7 +2498,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     int64_t actual_allocd = gc_num.since_sweep;
     // marking is over
 
-    // 4. check for objects to finalize
+    // 5. check for objects to finalize
     clear_weak_refs();
     // Record the length of the marked list since we need to
     // mark the object moved to the marked list from the
@@ -2552,7 +2548,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     gc_num.total_allocd += gc_num.since_sweep;
     if (!prev_sweep_full)
         promoted_bytes += perm_scanned_bytes - last_perm_scanned_bytes;
-    // 5. next collection decision
+    // 6. next collection decision
     int not_freed_enough = (collection == JL_GC_AUTO) && estimate_freed < (7*(actual_allocd/10));
     int nptr = 0;
     for (int i = 0;i < jl_n_threads;i++)
@@ -2597,7 +2593,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         promoted_bytes = 0;
     }
     scanned_bytes = 0;
-    // 5. start sweeping
+    // 7. start sweeping
     uint64_t start_sweep_time = jl_hrtime();
     JL_PROBE_GC_SWEEP_BEGIN(sweep_full);
     sweep_weak_refs();
@@ -2618,7 +2614,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     gc_num.sweep_time = sweep_time;
 
     // sweeping is over
-    // 6. if it is a quick sweep, put back the remembered objects in queued state
+    // 8. if it is a quick sweep, put back the remembered objects in queued state
     // so that we don't trigger the barrier again on them.
     for (int t_i = 0;t_i < jl_n_threads;t_i++) {
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
