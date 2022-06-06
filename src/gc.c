@@ -1979,7 +1979,7 @@ JL_DLLEXPORT void jl_gc_mark_queue_objarray(jl_ptls_t ptls, jl_value_t *parent,
     return;
 }
 
-static void gc_mark_update_meta(jl_ptls_t ptls, jl_value_t *obj)
+static void gc_update_meta(jl_ptls_t ptls, jl_value_t *obj)
 {
     assert(obj);
     jl_taggedvalue_t *o = jl_astaggedvalue(obj);
@@ -2021,6 +2021,8 @@ static void gc_mark_update_meta(jl_ptls_t ptls, jl_value_t *obj)
         gc_setmark(ptls, o, bits, jl_string_len(obj) + sizeof(size_t) + 1);
     }
     else {
+        if (__unlikely(!jl_is_datatype(vt)))
+            gc_assert_datatype_fail(ptls, vt, &ptls->mark_queue);
         gc_setmark(ptls, o, bits, jl_datatype_size(vt));
     }
 }
@@ -2031,6 +2033,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
     jl_value_t *new_obj = NULL;
     uintptr_t nptr = 0;
     uint8_t bits = 0;
+    int foreign_alloc;
 
     // Used to mark an object array
     // which can come from an array, svec
@@ -2088,13 +2091,11 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
             jl_raise_debugger();
 #endif
         if (!gc_verifying)
-            gc_mark_update_meta(ptls, new_obj);
+            gc_update_meta(ptls, new_obj);
         jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
         jl_datatype_t *vt = (jl_datatype_t *)(o->header & ~(uintptr_t)0xf);
         bits = gc_old(o->header) ? GC_OLD_MARKED : GC_MARKED;
-        int foreign_alloc = (void *)o >= sysimg_base && (void *)o < sysimg_end;
-        // Symbols are always marked
-        assert(vt != jl_symbol_type);
+        foreign_alloc = (void *)o >= sysimg_base && (void *)o < sysimg_end;
         if (vt == jl_simplevector_type) {
             size_t l = jl_svec_len(new_obj);
             jl_value_t **data = jl_svec_data(new_obj);
@@ -2251,8 +2252,6 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
                 objprofile_count(vt, bits == GC_OLD_MARKED, dtsz);
         }
         else {
-            if (__unlikely(!jl_is_datatype(vt)))
-                gc_assert_datatype_fail(ptls, vt, mq);
             size_t dtsz = jl_datatype_size(vt);
             if (foreign_alloc)
                 objprofile_count(vt, bits == GC_OLD_MARKED, dtsz);
@@ -2296,6 +2295,30 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
                     gc_mark_push_remset(ptls, new_obj, young * 4 + 3);
             }
         }
+    }
+}
+
+static void gc_premark(jl_ptls_t ptls2)
+{
+    arraylist_t *remset = ptls2->heap.remset;
+    ptls2->heap.remset = ptls2->heap.last_remset;
+    ptls2->heap.last_remset = remset;
+    ptls2->heap.remset->len = 0;
+    ptls2->heap.remset_nptr = 0;
+    // avoid counting remembered objects & bindings twice
+    // in `perm_scanned_bytes`
+    size_t len = remset->len;
+    void **items = remset->items;
+    for (size_t i = 0; i < len; i++) {
+        jl_value_t *item = (jl_value_t *)items[i];
+        objprofile_count(jl_typeof(item), 2, 0);
+        jl_astaggedvalue(item)->bits.gc = GC_OLD_MARKED;
+    }
+    len = ptls2->heap.rem_bindings.len;
+    items = ptls2->heap.rem_bindings.items;
+    for (size_t i = 0; i < len; i++) {
+        void *ptr = items[i];
+        jl_astaggedvalue(ptr)->bits.gc = GC_OLD_MARKED;
     }
 }
 
@@ -2344,31 +2367,6 @@ static void gc_queue_bt_buf(jl_gc_markqueue_t *mq, jl_ptls_t ptls2)
         size_t njlvals = jl_bt_num_jlvals(bt_entry);
         for (size_t j = 0; j < njlvals; j++)
             gc_try_claim_and_push(mq, jl_bt_entry_jlvalue(bt_entry, j), NULL);
-    }
-}
-
-static void gc_premark(jl_ptls_t ptls2)
-{
-    arraylist_t *remset = ptls2->heap.remset;
-    ptls2->heap.remset = ptls2->heap.last_remset;
-    ptls2->heap.last_remset = remset;
-    ptls2->heap.remset->len = 0;
-    ptls2->heap.remset_nptr = 0;
-
-    // avoid counting remembered objects & bindings twice
-    // in `perm_scanned_bytes`
-    size_t len = remset->len;
-    void **items = remset->items;
-    for (size_t i = 0; i < len; i++) {
-        jl_value_t *item = (jl_value_t *)items[i];
-        objprofile_count(jl_typeof(item), 2, 0);
-        jl_astaggedvalue(item)->bits.gc = GC_OLD_MARKED;
-    }
-    len = ptls2->heap.rem_bindings.len;
-    items = ptls2->heap.rem_bindings.items;
-    for (size_t i = 0; i < len; i++) {
-        void *ptr = items[i];
-        jl_astaggedvalue(ptr)->bits.gc = GC_OLD_MARKED;
     }
 }
 
