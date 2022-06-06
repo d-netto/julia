@@ -1862,7 +1862,6 @@ STATIC_INLINE void gc_mark_stack(jl_ptls_t ptls, jl_gcframe_t *s, uint32_t nroot
         assert(new_nroots <= UINT32_MAX);
         nroots = (uint32_t)new_nroots;
         nr = nroots >> 2;
-        continue;
     }
 }
 
