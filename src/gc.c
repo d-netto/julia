@@ -816,13 +816,12 @@ STATIC_INLINE void gc_setmark(jl_ptls_t ptls, jl_taggedvalue_t *o,
 STATIC_INLINE void gc_setmark_buf_(jl_ptls_t ptls, void *o, uint8_t mark_mode, size_t minsz) JL_NOTSAFEPOINT
 {
     jl_taggedvalue_t *buf = jl_astaggedvalue(o);
-    uint8_t bits;
+    uint8_t bits = (gc_old(buf->header) && !mark_reset_age) ? GC_OLD_MARKED : GC_MARKED;;
     // If the object is larger than the max pool size it can't be a pool object.
     // This should be accurate most of the time but there might be corner cases
     // where the size estimate is a little off so we do a pool lookup to make
     // sure.
     if (__likely(gc_try_setmark_tag(buf, mark_mode)) && !gc_verifying) {
-        bits = (gc_old(buf->header) && !mark_reset_age) ? GC_OLD_MARKED : GC_MARKED;
         if (minsz <= GC_MAX_SZCLASS) {
             jl_gc_pagemeta_t *page = page_metadata(buf);
             if (page) {
@@ -1711,7 +1710,7 @@ STATIC_INLINE void gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
         return;
     jl_value_t *obj = (jl_value_t *)jl_assume(_obj);
     jl_taggedvalue_t *o = jl_astaggedvalue(obj);
-    if (gc_old(o->header) && nptr)
+    if (!gc_old(o->header) && nptr)
         *nptr |= 1;
     if (gc_try_setmark_tag(o, GC_MARKED))
         gc_markqueue_push(mq, obj);
@@ -2265,8 +2264,11 @@ static void gc_queue_remset(jl_gc_markqueue_t *mq, jl_ptls_t ptls2)
 {
     size_t len = ptls2->heap.last_remset->len;
     void **items = ptls2->heap.last_remset->items;
-    for (size_t i = 0; i < len; i++)
+    for (size_t i = 0; i < len; i++) {
+        // Objects in the `remset` are already marked,
+        // so a `gc_try_claim_and_push` wouldn't work here
         gc_markqueue_push(mq, (jl_value_t *)items[i]);
+    }
     int n_bnd_refyoung = 0;
     len = ptls2->heap.rem_bindings.len;
     items = ptls2->heap.rem_bindings.items;
