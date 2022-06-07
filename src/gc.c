@@ -1795,8 +1795,8 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent,
     jl_value_t *new_obj;
     size_t elsize = ((jl_array_t *)ary8_parent)->elsize / sizeof(jl_value_t *);
     for (; ary8_begin < ary8_end; ary8_begin += elsize) {
-        for (; elem_begin < elem_end; elem_begin++) {
-            new_obj = ary8_begin[*elem_begin];
+        for (uint8_t *pindex = elem_begin; pindex < elem_end; pindex++) {
+            new_obj = ary8_begin[*pindex];
             if (new_obj)
                 verify_parent2("array", ary8_parent, &new_obj, "elem(%d)",
                                gc_slot_to_arrayidx(ary8_parent, ary8_begin));
@@ -1807,7 +1807,7 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent,
 }
 
 // TODO: write docstring
-STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent, 
+STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent,
                                    jl_value_t **ary16_begin, jl_value_t **ary16_end,
                                    uint16_t *elem_begin, uint16_t *elem_end,
                                    uintptr_t nptr) JL_NOTSAFEPOINT
@@ -1816,8 +1816,8 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent,
     jl_value_t *new_obj;
     size_t elsize = ((jl_array_t *)ary16_parent)->elsize / sizeof(jl_value_t *);
     for (; ary16_begin < ary16_end; ary16_begin += elsize) {
-        for (; elem_begin < elem_end; elem_begin++) {
-            new_obj = ary16_begin[*elem_begin];
+        for (uint16_t *pindex = elem_begin; pindex < elem_end; pindex++) {
+            new_obj = ary16_begin[*pindex];
             if (new_obj)
                 verify_parent2("array", ary16_parent, &new_obj, "elem(%d)",
                                gc_slot_to_arrayidx(ary16_parent, ary16_begin));
@@ -1975,7 +1975,7 @@ JL_DLLEXPORT void jl_gc_mark_queue_objarray(jl_ptls_t ptls, jl_value_t *parent,
 }
 
 // TODO: write docstring
-JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
+JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
 {
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     while (1) {
@@ -1983,7 +1983,6 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
         // No more objects to mark
         if (!new_obj) {
             // TODO: work-stealing comes here...
-            fprintf(stderr, "done with marking...\n");
             return;
         }
 #ifdef JL_DEBUG_BUILD
@@ -1993,7 +1992,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
         jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
         jl_datatype_t *vt = (jl_datatype_t *)(o->header & ~(uintptr_t)0xf);
         uint8_t bits = (gc_old(o->header) && !mark_reset_age) ? GC_OLD_MARKED : GC_MARKED;
-        int update_meta = __likely(!meta_updated && !gc_verifying);
+        int update_meta = __likely(!gc_verifying);
         int foreign_alloc = 0;
         if (update_meta && (void *)o >= sysimg_base && (void *)o < sysimg_end) {
             foreign_alloc = 1;
@@ -2189,7 +2188,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls, int meta_updated)
             uint32_t npointers = layout->npointers;
             if (npointers == 0)
                 continue;
-            uintptr_t nptr = npointers << 2 | (bits & GC_OLD);
+            uintptr_t nptr = (npointers << 2 | (bits & GC_OLD));
             assert((layout->nfields > 0 || layout->fielddesc_type == 3) &&
                    "opaque types should have been handled specially");
             if (layout->fielddesc_type == 0) {
@@ -2470,18 +2469,13 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     uint64_t start_mark_time = jl_hrtime();
 
     // 1. fix GC bits of objects in the remset.
-    for (int t_i = 0; t_i < jl_n_threads; t_i++)  {
+    for (int t_i = 0; t_i < jl_n_threads; t_i++)
         gc_premark(jl_all_tls_states[t_i]);
-    }
-    for (int t_i = 0; t_i < jl_n_threads; t_i++)  {
-        gc_queue_remset(mq, jl_all_tls_states[t_i]);
-    }
-    // Objects in the remset should already be marked and the GC metadata
-    // should already be updated for them
-    gc_mark_loop(ptls, 1);
-
+    
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
+        // 2.1. mark every object in the `last_remsets` and `rem_binding`
+        gc_queue_remset(mq, jl_all_tls_states[t_i]);
         // 3.1. mark every thread local root
         gc_queue_thread_local(mq, ptls2);
         // 3.2 mark any managed objects in the backtrace buffer
@@ -2494,7 +2488,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         gc_invoke_callbacks(jl_gc_cb_root_scanner_t,
             gc_cblist_root_scanner, (collection));
     }
-    gc_mark_loop(ptls, 0);
+    gc_mark_loop(ptls);
     gc_num.since_sweep += gc_num.allocd;
     JL_PROBE_GC_MARK_END(scanned_bytes, perm_scanned_bytes);
     gc_settime_premark_end();
@@ -2527,7 +2521,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     gc_mark_finlist(ptls, &finalizer_list_marked, orig_marked_len);
     // "Flush" the mark stack before flipping the reset_age bit
     // so that the objects are not incorrectly reset.
-    gc_mark_loop(ptls, 0);
+    gc_mark_loop(ptls);
     // Conservative marking relies on age to tell allocated objects
     // and freelist entries apart.
     mark_reset_age = !jl_gc_conservative_gc_support_enabled();
@@ -2536,7 +2530,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     // and should not be referenced by any old objects so this won't break
     // the GC invariant.
     gc_mark_finlist(ptls, &to_finalize, 0);
-    gc_mark_loop(ptls, 0);
+    gc_mark_loop(ptls);
     mark_reset_age = 0;
     gc_settime_postmark_end();
 
