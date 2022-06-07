@@ -1974,7 +1974,7 @@ JL_DLLEXPORT void jl_gc_mark_queue_objarray(jl_ptls_t ptls, jl_value_t *parent,
 }
 
 // TODO: write docstring
-STATIC_INLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_updated)
+NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_updated)
 {
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
 #ifdef JL_DEBUG_BUILD
