@@ -173,9 +173,15 @@ typedef struct {
 typedef union _jl_gc_mark_data jl_gc_mark_data_t;
 
 typedef struct {
-    struct _jl_value_t **start;
-    struct _jl_value_t **current;
-    struct _jl_value_t **end;
+    struct _jl_value_t **buffer;
+    size_t capacity;
+} jl_gc_ws_array_t;
+
+typedef struct {
+    _Atomic(int64_t) top;
+    _Atomic(int64_t) bottom;
+    _Atomic(jl_gc_ws_array_t *) array;
+    arraylist_t *reclaim_set;
 } jl_gc_markqueue_t;
 
 typedef struct {
@@ -213,6 +219,9 @@ typedef struct _jl_tls_states_t {
 #define JL_GC_STATE_SAFE 2
     // gc_state = 2 means the thread is running unmanaged code that can be
     //              execute at the same time with the GC.
+#define JL_GC_STATE_PARALLEL 3
+    // gc_state = 3 means the thread is doing GC work that can be executed
+    //              concurrently on multiple threads.
     _Atomic(int8_t) gc_state; // read from foreign threads
     // execution of certain certain impure
     // statements is prohibited from certain
@@ -354,6 +363,18 @@ int8_t jl_gc_safe_leave(jl_ptls_t ptls, int8_t state); // Can be a safepoint
 #define jl_gc_safe_leave(ptls, state) ((void)jl_gc_state_set(ptls, (state), JL_GC_STATE_SAFE))
 #endif
 JL_DLLEXPORT void (jl_gc_safepoint)(void);
+#define jl_gc_mark_loop_enter(ptls) do     {                              \
+        jl_atomic_fetch_add(&nworkers_marking, 1);                        \
+        jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_PARALLEL);   \
+    } while (0)           
+#define jl_gc_mark_loop_leave(ptls) do     {                              \
+        jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);    \
+        jl_atomic_fetch_add(&nworkers_marking, -1);                       \
+    } while (0)   
+JL_DLLEXPORT void (jl_gc_safepoint)(void);
+// Either NULL, or the address of a function that threads can call while
+// waiting for the GC, which will recruit them into a concurrent GC operation.
+extern _Atomic(void *) jl_gc_recruiting_location;
 
 JL_DLLEXPORT void jl_gc_enable_finalizers(struct _jl_task_t *ct, int on);
 JL_DLLEXPORT void jl_gc_disable_finalizers_internal(void);

@@ -27,6 +27,8 @@ static jl_gc_callback_list_t *gc_cblist_post_gc;
 static jl_gc_callback_list_t *gc_cblist_notify_external_alloc;
 static jl_gc_callback_list_t *gc_cblist_notify_external_free;
 
+extern _Atomic(int32_t) nworkers_marking;
+
 #define gc_invoke_callbacks(ty, list, args) \
     do { \
         for (jl_gc_callback_list_t *cb = list; \
@@ -1703,6 +1705,87 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
 }
 
 // TODO: write docstring
+jl_gc_ws_array_t *gc_create_ws_array(size_t capacity)
+{
+    jl_gc_ws_array_t *a = (jl_gc_ws_array_t *)malloc(sizeof(jl_gc_ws_array_t));
+    a->buffer = (jl_value_t **)malloc(capacity * sizeof(jl_value_t *));
+    a->capacity = capacity;
+    return a;
+}
+
+// TODO: write docstring
+jl_value_t *gc_markqueue_steal_from(jl_gc_markqueue_t *mq)
+{
+    int64_t t = jl_atomic_load_acquire(&mq->top);
+    jl_fence();
+    int64_t b = jl_atomic_load_acquire(&mq->bottom);
+    jl_value_t *v = NULL;
+    if (t < b) {
+        jl_gc_ws_array_t *a = jl_atomic_load_relaxed(&mq->array);
+        v = jl_atomic_load_relaxed((_Atomic(jl_value_t *) *)&a->buffer[t % a->capacity]);
+        if (!jl_atomic_cmpswap(&mq->top, &t, t + 1))
+            return NULL;
+    }
+    return v;
+}
+
+// TODO: write docstring
+jl_gc_ws_array_t *gc_markqueue_resize(jl_gc_markqueue_t *mq)
+{
+    size_t old_top = jl_atomic_load_relaxed(&mq->top);
+    jl_gc_ws_array_t *old_a = jl_atomic_load_relaxed(&mq->array);
+    jl_gc_ws_array_t *new_a = gc_create_ws_array(2 * old_a->capacity);
+    // Copy elements into new buffer
+    for (size_t i = 0; i < old_a->capacity; ++i) {
+        new_a->buffer[(old_top + i) % (2 * old_a->capacity)] =
+            old_a->buffer[(old_top + i) % old_a->capacity];
+    }
+    jl_atomic_store_relaxed(&mq->array, new_a);
+    // Buffer will be reclaimed at the end of marking
+    arraylist_push(mq->reclaim_set, old_a);
+    return new_a;
+}
+
+// TODO: write docstring
+void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *v)
+{
+    int64_t b = jl_atomic_load_relaxed(&mq->bottom);
+    int64_t t = jl_atomic_load_acquire(&mq->top);
+    jl_gc_ws_array_t *a = jl_atomic_load_relaxed(&mq->array);
+    if (b - t > a->capacity - 1) {
+        // Queue is full: resize it
+        a = gc_markqueue_resize(mq);
+    }
+    jl_atomic_store_relaxed((_Atomic(jl_value_t *) *)&a->buffer[b % a->capacity], v);
+    jl_fence_release();
+    jl_atomic_store_relaxed(&mq->bottom, b + 1);
+}
+
+// TODO: write docstring
+jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
+{
+    int64_t b = jl_atomic_load_relaxed(&mq->bottom) - 1;
+    jl_gc_ws_array_t *a = jl_atomic_load_relaxed(&mq->array);
+    jl_atomic_store_relaxed(&mq->bottom, b);
+    jl_fence();
+    int64_t t = jl_atomic_load_relaxed(&mq->top);
+    jl_value_t *v;
+    if (t <= b) {
+        v = jl_atomic_load_relaxed((_Atomic(jl_value_t *) *)&a->buffer[b % a->capacity]);
+        if (t == b) {
+            if (!jl_atomic_cmpswap(&mq->top, &t, t + 1))
+                v = NULL;
+            jl_atomic_store_relaxed(&mq->bottom, b + 1);
+        }
+    }
+    else {
+        v = NULL;
+        jl_atomic_store_relaxed(&mq->bottom, b + 1);
+    }
+    return v;
+}
+
+// TODO: write docstring
 STATIC_INLINE void gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
                                          uintptr_t *nptr) JL_NOTSAFEPOINT
 {
@@ -2214,15 +2297,39 @@ NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_upda
 }
 
 // TODO: write docstring
+void gc_set_recruit(jl_ptls_t ptls, void *addr)
+{
+    jl_fence();
+    jl_atomic_store_release(&jl_gc_recruiting_location, addr);
+    if (jl_n_threads > 1)
+        jl_wake_libuv();
+    for (int i = 0; i < jl_n_threads; i++) {
+        if (i == ptls->tid)
+            continue;
+        jl_wakeup_thread(i);
+    }
+}
+
+// TODO: write docstring
 JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
 {
     while (1) {
         jl_value_t *new_obj = gc_markqueue_pop(&ptls->mark_queue);
         // No more objects to mark
         if (!new_obj) {
-            // TODO: work-stealing comes here...
-            return;
+            // Steal from another thread
+            for (int i = 0; i < 2 * jl_n_threads; i++) {
+                size_t victim = rand() % jl_n_threads;
+                jl_gc_markqueue_t *mq2 = &jl_all_tls_states[victim]->mark_queue;
+                new_obj = gc_markqueue_steal_from(mq2);
+                if (new_obj) 
+                    break;
+            }
         }
+        // Couldn't get object from own queue and
+        // stealing failed: leave marking
+        if (!new_obj)
+            return;
         gc_mark_outrefs(ptls, new_obj, 0);
     }
 }
@@ -2493,7 +2600,14 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         gc_invoke_callbacks(jl_gc_cb_root_scanner_t,
             gc_cblist_root_scanner, (collection));
     }
+    // Mark-loop entry/exit sequence
+    jl_gc_mark_loop_enter(ptls);
+    gc_set_recruit(ptls, (void *)gc_mark_loop);
     gc_mark_loop(ptls);
+    jl_gc_mark_loop_leave(ptls);
+    jl_safepoint_wait_gc();
+    jl_atomic_store_release(&jl_gc_recruiting_location, NULL);
+
     gc_num.since_sweep += gc_num.allocd;
     JL_PROBE_GC_MARK_END(scanned_bytes, perm_scanned_bytes);
     gc_settime_premark_end();
@@ -2829,12 +2943,16 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     gc_cache->perm_scanned_bytes = 0;
     gc_cache->scanned_bytes = 0;
     gc_cache->nbig_obj = 0;
+
+    // Initialize gc mark queue
     size_t init_size = 1024;
-
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
-
-    mq->current = mq->start = (jl_value_t**)malloc_s(init_size * sizeof(jl_value_t*));
-    mq->end = mq->start + init_size;
+    mq->top = 0;
+    mq->bottom = 0;
+    mq->array = gc_create_ws_array(init_size);
+    size_t reclaim_set_size = 32;
+    arraylist_t *a = (arraylist_t *)malloc(sizeof(arraylist_t));
+    mq->reclaim_set = arraylist_new(a, reclaim_set_size);
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     assert(gc_num.interval == default_collect_interval);
