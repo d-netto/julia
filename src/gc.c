@@ -2320,18 +2320,18 @@ STATIC_INLINE void _gc_mark_loop(jl_ptls_t ptls)
 {
     size_t timeout_ns = MIN_TIMEOUT_NS;
     jl_value_t *new_obj;
-    pop: {
+    pop : {
         new_obj = gc_markqueue_pop(&ptls->mark_queue);
         // Couldn't get object from own queue: try to
         // steal from someone else
         if (!new_obj)
             goto steal;
     }
-    mark: {
+    mark : {
         gc_mark_outrefs(ptls, new_obj, 0);
         goto pop;
     }
-    steal: {
+    steal : {
         // Steal from another thread
         for (int i = 0; i < 2 * jl_n_threads; i++) {
             size_t victim = rand() % jl_n_threads;
@@ -2347,7 +2347,7 @@ STATIC_INLINE void _gc_mark_loop(jl_ptls_t ptls)
         return;
     // Otherwise, backoff and go to sleep
     jl_atomic_fetch_add(&nworkers_marking, -1);
-    timeout_ns = _MIN(timeout_ns * 2, MAX_TIMEOUT_NS);
+    timeout_ns = _MIN(2 * timeout_ns, MAX_TIMEOUT_NS);
     sleep(10e-9 * (rand() % timeout_ns));
     jl_atomic_fetch_add(&nworkers_marking, 1);
     goto pop;
