@@ -2829,12 +2829,22 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     gc_cache->perm_scanned_bytes = 0;
     gc_cache->scanned_bytes = 0;
     gc_cache->nbig_obj = 0;
-    size_t init_size = 1024;
 
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
 
-    mq->current = mq->start = (jl_value_t**)malloc_s(init_size * sizeof(jl_value_t*));
-    mq->end = mq->start + init_size;
+    // Initialize prefetch buffer
+    jl_gc_prefetch_buf_t *pf_buf = &mq->prefetch_buf;
+    size_t pf_buf_size = 256;
+    pf_buf->start = (jl_value_t**)malloc_s(pf_buf_size * sizeof(jl_value_t*));
+    pf_buf->top = 0;
+    pf_buf->bottom = 0;
+    pf_buf->size = pf_buf_size;
+
+    // Initialize mark-stack
+    jl_gc_markstack_t *ms = &mq->mark_stack;
+    size_t ms_init_size = 2048;
+    ms->current = ms->start = (jl_value_t**)malloc_s(ms_init_size * sizeof(jl_value_t*));
+    ms->end = ms->start + ms_init_size;
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     assert(gc_num.interval == default_collect_interval);

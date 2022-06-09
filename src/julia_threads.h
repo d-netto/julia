@@ -174,8 +174,20 @@ typedef union _jl_gc_mark_data jl_gc_mark_data_t;
 
 typedef struct {
     struct _jl_value_t **start;
+    size_t top;
+    size_t bottom;
+    size_t size;
+} jl_gc_prefetch_buf_t;
+
+typedef struct {
+    struct _jl_value_t **start;
     struct _jl_value_t **current;
     struct _jl_value_t **end;
+} jl_gc_markstack_t;
+
+typedef struct {
+    jl_gc_prefetch_buf_t prefetch_buf;
+    jl_gc_markstack_t mark_stack;
 } jl_gc_markqueue_t;
 
 typedef struct {
