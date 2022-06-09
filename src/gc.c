@@ -27,7 +27,7 @@ static jl_gc_callback_list_t *gc_cblist_post_gc;
 static jl_gc_callback_list_t *gc_cblist_notify_external_alloc;
 static jl_gc_callback_list_t *gc_cblist_notify_external_free;
 
-extern _Atomic(int32_t) nworkers_marking;
+_Atomic(int32_t) nworkers_marking = 0;
 
 #define gc_invoke_callbacks(ty, list, args) \
     do { \
@@ -2057,6 +2057,20 @@ JL_DLLEXPORT void jl_gc_mark_queue_objarray(jl_ptls_t ptls, jl_value_t *parent,
 }
 
 // TODO: write docstring
+void gc_set_recruit(jl_ptls_t ptls, void *addr)
+{
+    jl_fence();
+    jl_atomic_store_release(&jl_gc_recruiting_location, addr);
+    if (jl_n_threads > 1)
+        jl_wake_libuv();
+    for (int i = 0; i < jl_n_threads; i++) {
+        if (i == ptls->tid)
+            continue;
+        jl_wakeup_thread(i);
+    }
+}
+
+// TODO: write docstring
 NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_updated)
 {
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
@@ -2296,42 +2310,55 @@ NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_upda
     }
 }
 
+// TODO: move this somewhere else?
+const size_t MIN_TIMEOUT_NS = 1e1;
+const size_t MAX_TIMEOUT_NS = 1e3;
+#define _MIN(a, b) a < b ? a : b;
+
 // TODO: write docstring
-void gc_set_recruit(jl_ptls_t ptls, void *addr)
+STATIC_INLINE void _gc_mark_loop(jl_ptls_t ptls)
 {
-    jl_fence();
-    jl_atomic_store_release(&jl_gc_recruiting_location, addr);
-    if (jl_n_threads > 1)
-        jl_wake_libuv();
-    for (int i = 0; i < jl_n_threads; i++) {
-        if (i == ptls->tid)
-            continue;
-        jl_wakeup_thread(i);
+    size_t timeout_ns = MIN_TIMEOUT_NS;
+    jl_value_t *new_obj;
+    pop: {
+        new_obj = gc_markqueue_pop(&ptls->mark_queue);
+        // Couldn't get object from own queue: try to
+        // steal from someone else
+        if (!new_obj)
+            goto steal;
     }
+    mark: {
+        gc_mark_outrefs(ptls, new_obj, 0);
+        goto pop;
+    }
+    steal: {
+        // Steal from another thread
+        for (int i = 0; i < 2 * jl_n_threads; i++) {
+            size_t victim = rand() % jl_n_threads;
+            jl_gc_markqueue_t *mq2 = &jl_all_tls_states[victim]->mark_queue;
+            new_obj = gc_markqueue_steal_from(mq2);
+            if (new_obj)
+                goto mark;
+        }
+    }
+    // I'm the only one in the mark-loop and I have nothing in my
+    // queue: should return
+    if (jl_atomic_load_acquire(&nworkers_marking) == 1)
+        return;
+    // Otherwise, backoff and go to sleep
+    jl_atomic_fetch_add(&nworkers_marking, -1);
+    timeout_ns = _MIN(timeout_ns * 2, MAX_TIMEOUT_NS);
+    sleep(10e-9 * (rand() % timeout_ns));
+    jl_atomic_fetch_add(&nworkers_marking, 1);
+    goto pop;
 }
 
 // TODO: write docstring
 JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
 {
-    while (1) {
-        jl_value_t *new_obj = gc_markqueue_pop(&ptls->mark_queue);
-        // No more objects to mark
-        if (!new_obj) {
-            // Steal from another thread
-            for (int i = 0; i < 2 * jl_n_threads; i++) {
-                size_t victim = rand() % jl_n_threads;
-                jl_gc_markqueue_t *mq2 = &jl_all_tls_states[victim]->mark_queue;
-                new_obj = gc_markqueue_steal_from(mq2);
-                if (new_obj) 
-                    break;
-            }
-        }
-        // Couldn't get object from own queue and
-        // stealing failed: leave marking
-        if (!new_obj)
-            return;
-        gc_mark_outrefs(ptls, new_obj, 0);
-    }
+    jl_atomic_fetch_add(&nworkers_marking, 1);
+    _gc_mark_loop(ptls);
+    jl_atomic_fetch_add(&nworkers_marking, -1);
 }
 
 static void gc_premark(jl_ptls_t ptls2)
@@ -2601,11 +2628,8 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
             gc_cblist_root_scanner, (collection));
     }
     // Mark-loop entry/exit sequence
-    jl_gc_mark_loop_enter(ptls);
     gc_set_recruit(ptls, (void *)gc_mark_loop);
     gc_mark_loop(ptls);
-    jl_gc_mark_loop_leave(ptls);
-    jl_safepoint_wait_gc();
     jl_atomic_store_release(&jl_gc_recruiting_location, NULL);
 
     gc_num.since_sweep += gc_num.allocd;

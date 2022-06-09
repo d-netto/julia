@@ -99,14 +99,10 @@ void jl_init_threadinginfra(void)
 
     int16_t tid;
     sleep_locks = (uv_mutex_t*)calloc(jl_n_threads, sizeof(uv_mutex_t));
-    safepoint_sleep_locks = (uv_mutex_t*)calloc(jl_n_threads, sizeof(uv_mutex_t));
     wake_signals = (uv_cond_t*)calloc(jl_n_threads, sizeof(uv_cond_t));
-    safepoint_wake_signals = (uv_cond_t*)calloc(jl_n_threads, sizeof(uv_cond_t));
     for (tid = 0; tid < jl_n_threads; tid++) {
         uv_mutex_init(&sleep_locks[tid]);
-        uv_mutex_init(&safepoint_sleep_locks[tid]);
         uv_cond_init(&wake_signals[tid]);
-        uv_cond_init(&safepoint_wake_signals[tid]);
     }
 }
 
