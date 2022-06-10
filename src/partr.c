@@ -47,8 +47,8 @@ uint64_t io_wakeup_enter;
 uint64_t io_wakeup_leave;
 );
 
-uv_mutex_t *sleep_locks, *safepoint_sleep_locks;
-uv_cond_t *wake_signals, *safepoint_wake_signals;
+uv_mutex_t *sleep_locks;
+uv_cond_t *wake_signals;
 
 JL_DLLEXPORT int jl_set_task_tid(jl_task_t *task, int16_t tid) JL_NOTSAFEPOINT
 {
