@@ -173,11 +173,16 @@ typedef struct {
 typedef union _jl_gc_mark_data jl_gc_mark_data_t;
 
 typedef struct {
-    void **pc; // Current stack address for the pc (up growing)
-    jl_gc_mark_data_t *data; // Current stack address for the data (up growing)
-    void **pc_start; // Cached value of `gc_cache->pc_stack`
-    void **pc_end; // Cached value of `gc_cache->pc_stack_end`
-} jl_gc_mark_sp_t;
+    struct _jl_value_t **buffer;
+    size_t capacity;
+} jl_gc_ws_array_t;
+
+typedef struct {
+    _Atomic(int64_t) top;
+    _Atomic(int64_t) bottom;
+    _Atomic(jl_gc_ws_array_t *) array;
+    arraylist_t *reclaim_set;
+} jl_gc_markqueue_t;
 
 typedef struct {
     // thread local increment of `perm_scanned_bytes`
@@ -195,9 +200,6 @@ typedef struct {
     // this makes sure that a single objects can only appear once in
     // the lists (the mark bit cannot be flipped to `0` without sweeping)
     void *big_obj[1024];
-    void **pc_stack;
-    void **pc_stack_end;
-    jl_gc_mark_data_t *data_stack;
 } jl_gc_mark_cache_t;
 
 struct _jl_bt_element_t;
@@ -262,9 +264,9 @@ typedef struct _jl_tls_states_t {
 #endif
     jl_thread_t system_id;
     arraylist_t finalizers;
+    jl_gc_markqueue_t mark_queue;
     jl_gc_mark_cache_t gc_cache;
     arraylist_t sweep_objs;
-    jl_gc_mark_sp_t gc_mark_sp;
     // Saved exception for previous *external* API call or NULL if cleared.
     // Access via jl_exception_occurred().
     struct _jl_value_t *previous_exception;
@@ -358,6 +360,10 @@ int8_t jl_gc_safe_leave(jl_ptls_t ptls, int8_t state); // Can be a safepoint
 #define jl_gc_safe_leave(ptls, state) ((void)jl_gc_state_set(ptls, (state), JL_GC_STATE_SAFE))
 #endif
 JL_DLLEXPORT void (jl_gc_safepoint)(void);
+JL_DLLEXPORT void (jl_gc_safepoint)(void);
+// Either NULL, or the address of a function that threads can call while
+// waiting for the GC, which will recruit them into a concurrent GC operation.
+extern _Atomic(void *) jl_gc_recruiting_location;
 
 JL_DLLEXPORT void jl_gc_enable_finalizers(struct _jl_task_t *ct, int on);
 JL_DLLEXPORT void jl_gc_disable_finalizers_internal(void);

@@ -47,8 +47,8 @@ uint64_t io_wakeup_enter;
 uint64_t io_wakeup_leave;
 );
 
-uv_mutex_t *sleep_locks;
-uv_cond_t *wake_signals;
+uv_mutex_t *sleep_locks, *safepoint_sleep_locks;
+uv_cond_t *wake_signals, *safepoint_wake_signals;
 
 JL_DLLEXPORT int jl_set_task_tid(jl_task_t *task, int16_t tid) JL_NOTSAFEPOINT
 {
@@ -70,8 +70,8 @@ JL_DLLEXPORT int jl_set_task_threadpoolid(jl_task_t *task, int8_t tpid) JL_NOTSA
 }
 
 // GC functions used
-extern int jl_gc_mark_queue_obj_explicit(jl_gc_mark_cache_t *gc_cache,
-                                         jl_gc_mark_sp_t *sp, jl_value_t *obj) JL_NOTSAFEPOINT;
+extern int jl_gc_mark_queue_obj_explicit(jl_gc_mark_cache_t *gc_cache, 
+                                         jl_value_t *obj) JL_NOTSAFEPOINT;
 
 // parallel task runtime
 // ---
@@ -409,7 +409,7 @@ JL_DLLEXPORT jl_task_t *jl_task_get_next(jl_value_t *trypoptask, jl_value_t *q, 
             uv_mutex_lock(&sleep_locks[ptls->tid]);
             while (may_sleep(ptls)) {
                 uv_cond_wait(&wake_signals[ptls->tid], &sleep_locks[ptls->tid]);
-                // TODO: help with gc work here, if applicable
+                jl_safepoint_wait_gc();
             }
             assert(jl_atomic_load_relaxed(&ptls->sleep_check_state) == not_sleeping);
             uv_mutex_unlock(&sleep_locks[ptls->tid]);
