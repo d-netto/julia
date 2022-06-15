@@ -2311,14 +2311,14 @@ NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_upda
 }
 
 // TODO: move this somewhere else?
-const size_t MIN_TIMEOUT_NS = 1e1;
-const size_t MAX_TIMEOUT_NS = 1e3;
+const size_t MIN_TIMEOUT_US = 1e2;
+const size_t MAX_TIMEOUT_US = 1e6;
 #define _MIN(a, b) a < b ? a : b;
 
 // TODO: write docstring
 STATIC_INLINE void _gc_mark_loop(jl_ptls_t ptls)
 {
-    size_t timeout_ns = MIN_TIMEOUT_NS;
+    size_t timeout_us = MIN_TIMEOUT_US;
     jl_value_t *new_obj;
     pop : {
         new_obj = gc_markqueue_pop(&ptls->mark_queue);
@@ -2343,12 +2343,14 @@ STATIC_INLINE void _gc_mark_loop(jl_ptls_t ptls)
     }
     // Worker is the only one in the mark-loop and has nothing in
     // queue: should return
-    if (jl_atomic_load_acquire(&nworkers_marking) == 1)
+    if (jl_atomic_load_acquire(&nworkers_marking) == 1) {
+        jl_atomic_store_release(&jl_gc_recruiting_location, NULL);
         return;
+    }
     // Otherwise, backoff and go to sleep
     jl_atomic_fetch_add(&nworkers_marking, -1);
-    timeout_ns = _MIN(2 * timeout_ns, MAX_TIMEOUT_NS);
-    sleep(10e-9 * (rand() % timeout_ns));
+    timeout_us = _MIN(2 * timeout_us, MAX_TIMEOUT_US);
+    sleep(10e-6 * (timeout_us));
     jl_atomic_fetch_add(&nworkers_marking, 1);
     goto pop;
 }
