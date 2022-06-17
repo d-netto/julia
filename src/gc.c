@@ -2310,15 +2310,9 @@ NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_upda
     }
 }
 
-// TODO: move this somewhere else?
-const size_t MIN_TIMEOUT_NS = 1e1;
-const size_t MAX_TIMEOUT_NS = 1e3;
-#define _MIN(a, b) a < b ? a : b;
-
 // TODO: write docstring
-STATIC_INLINE void _gc_mark_loop(jl_ptls_t ptls)
+void gc_mark_loop(jl_ptls_t ptls)
 {
-    size_t timeout_ns = MIN_TIMEOUT_NS;
     jl_value_t *new_obj;
     pop : {
         new_obj = gc_markqueue_pop(&ptls->mark_queue);
@@ -2341,24 +2335,16 @@ STATIC_INLINE void _gc_mark_loop(jl_ptls_t ptls)
                 goto mark;
         }
     }
-    // Worker is the only one in the mark-loop and has nothing in
-    // queue: should return
-    if (jl_atomic_load_acquire(&nworkers_marking) == 1)
-        return;
-    // Otherwise, backoff and go to sleep
-    jl_atomic_fetch_add(&nworkers_marking, -1);
-    timeout_ns = _MIN(2 * timeout_ns, MAX_TIMEOUT_NS);
-    sleep(10e-9 * (rand() % timeout_ns));
-    jl_atomic_fetch_add(&nworkers_marking, 1);
-    goto pop;
 }
 
 // TODO: write docstring
-JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
+JL_EXTENSION NOINLINE void gc_mark_loop_master(jl_ptls_t ptls)
 {
-    jl_atomic_fetch_add(&nworkers_marking, 1);
-    _gc_mark_loop(ptls);
-    jl_atomic_fetch_add(&nworkers_marking, -1);
+    uint8_t state0 = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
+    gc_set_recruit(ptls, (void *)gc_mark_loop);
+    gc_mark_loop(ptls);
+    jl_gc_state_set(ptls, state0, JL_GC_STATE_PARALLEL);
+    jl_safepoint_wait_gc();
 }
 
 static void gc_premark(jl_ptls_t ptls2)
@@ -2598,6 +2584,8 @@ size_t jl_maxrss(void);
 // Only one thread should be running in this function
 static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 {
+    
+    
     combine_thread_gc_counts(&gc_num);
 
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
@@ -2628,8 +2616,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
             gc_cblist_root_scanner, (collection));
     }
     // Mark-loop entry/exit sequence
-    gc_set_recruit(ptls, (void *)gc_mark_loop);
-    gc_mark_loop(ptls);
+    gc_mark_loop_master(ptls);
     jl_atomic_store_release(&jl_gc_recruiting_location, NULL);
 
     gc_num.since_sweep += gc_num.allocd;
