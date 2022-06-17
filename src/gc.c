@@ -2313,6 +2313,7 @@ NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_upda
 // TODO: write docstring
 void gc_mark_loop(jl_ptls_t ptls)
 {
+    jl_atomic_fetch_add(&nworkers_marking, 1);
     jl_value_t *new_obj;
     pop : {
         new_obj = gc_markqueue_pop(&ptls->mark_queue);
@@ -2335,6 +2336,7 @@ void gc_mark_loop(jl_ptls_t ptls)
                 goto mark;
         }
     }
+    jl_atomic_fetch_add(&nworkers_marking, -1);
 }
 
 // TODO: write docstring
