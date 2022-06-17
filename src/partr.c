@@ -237,7 +237,8 @@ JL_DLLEXPORT void jl_wakeup_thread(int16_t tid)
         if (wake_thread(tid)) {
             // check if we need to notify uv_run too
             jl_fence();
-            jl_task_t *tid_task = jl_atomic_load_relaxed(&jl_all_tls_states[tid]->current_task);
+            jl_ptls_t other = jl_all_tls_states[tid];
+            jl_task_t *tid_task = jl_atomic_load_relaxed(&other->current_task);
             // now that we have changed the thread to not-sleeping, ensure that
             // either it has not yet acquired the libuv lock, or that it will
             // observe the change of state to not_sleeping
