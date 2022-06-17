@@ -50,7 +50,7 @@ extern _Atomic(int32_t) nworkers_marking;
 
 extern uv_mutex_t *safepoint_sleep_locks;
 extern uv_cond_t *safepoint_wake_signals;
-const uint64_t timeout_ns = 10000;
+const uint64_t timeout_ns = 1000;
 
 static void jl_safepoint_enable(int idx) JL_NOTSAFEPOINT
 {
