@@ -93,6 +93,9 @@ static void NOINLINE gc_markqueue_resize(jl_gc_markstack_t *ms) JL_NOTSAFEPOINT
     ms->end = (ms->start + 2 * old_queue_size);
 }
 
+#define PF_MIN (1 << 6)
+#define PF_SIZE (1 << 8)
+
 // Push a work item to the queue
 STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, 
                                      jl_value_t *obj) JL_NOTSAFEPOINT
@@ -121,25 +124,14 @@ STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 {
     jl_gc_prefetch_buf_t *pf_buf = &mq->prefetch_buf;
     jl_gc_markstack_t *ms = &mq->mark_stack;
-    jl_value_t *to_prefetch = NULL;
-    // If mark-stack is non-empty, get top of it
-    if (ms->current != ms->start) {
-        ms->current--;
-        to_prefetch = *ms->current;
-    }
-    // Prefetch buffer is FIFO, so remove elt from top
     jl_value_t *obj = NULL;
-    if (pf_buf->bottom > pf_buf->top) {
+    if (pf_buf->bottom - pf_buf->top <= PF_MIN && ms->current != ms->start) {
+        ms->current--;
+        obj = *ms->current;
+    }
+    else if (pf_buf->bottom - pf_buf->top > 0) {
         obj = pf_buf->start[pf_buf->top % pf_buf->size];
         pf_buf->top++;
-    }
-    // If there was anything on stack, prefetch it and put it in
-    // the buffer
-    if (to_prefetch) {
-        __builtin_prefetch(to_prefetch);
-        pf_buf->start[pf_buf->bottom % pf_buf->size] = to_prefetch;
-        pf_buf->bottom++;
-
     }
     return obj;
 }

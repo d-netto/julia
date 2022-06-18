@@ -2834,11 +2834,10 @@ void jl_init_thread_heap(jl_ptls_t ptls)
 
     // Initialize prefetch buffer
     jl_gc_prefetch_buf_t *pf_buf = &mq->prefetch_buf;
-    size_t pf_buf_size = 256;
-    pf_buf->start = (jl_value_t**)malloc_s(pf_buf_size * sizeof(jl_value_t*));
+    pf_buf->start = (jl_value_t**)malloc_s(PF_SIZE * sizeof(jl_value_t*));
     pf_buf->top = 0;
     pf_buf->bottom = 0;
-    pf_buf->size = pf_buf_size;
+    pf_buf->size = PF_SIZE;
 
     // Initialize mark-stack
     jl_gc_markstack_t *ms = &mq->mark_stack;
