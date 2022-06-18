@@ -67,6 +67,8 @@ New library functions
 * `Iterators.flatmap` was added ([#44792]).
 * New helper `Splat(f)` which acts like `x -> f(x...)`, with pretty printing for
   inspecting which function `f` was originally wrapped. ([#42717])
+* New `pkgversion(m::Module)` function to get the version of the package that loaded
+  a given module, similar to `pkgdir(m::Module)`. ([#45607])
 
 Library changes
 ---------------
@@ -114,6 +116,10 @@ Standard library changes
 
 * `Meta-e` now opens the current input in an editor. The content (if modified) will be
   executed upon existing the editor.
+
+* The contextual module which is active at the REPL can be changed (it is `Main` by default),
+  via the `REPL.activate(::Module)` function or via typing the module in the REPL and pressing
+  the keybinding Alt-m ([#33872]).
 
 #### SparseArrays
 
