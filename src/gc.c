@@ -2342,10 +2342,10 @@ void gc_mark_loop(jl_ptls_t ptls)
 // TODO: write docstring
 JL_EXTENSION NOINLINE void gc_mark_loop_master(jl_ptls_t ptls)
 {
-    uint8_t state0 = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
+    uint8_t state0 = jl_atomic_exchange(&ptls->gc_state, JL_GC_STATE_PARALLEL);
     gc_set_recruit(ptls, (void *)gc_mark_loop);
     gc_mark_loop(ptls);
-    jl_gc_state_set(ptls, state0, JL_GC_STATE_PARALLEL);
+    jl_atomic_store_release(&ptls->gc_state, state0);
     jl_safepoint_wait_gc();
 }
 

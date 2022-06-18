@@ -176,11 +176,11 @@ int jl_safepoint_all_workers_done(jl_ptls_t ptls)
 void jl_safepoint_try_recruit(jl_ptls_t ptls)
 {
     if (jl_atomic_load_relaxed(&jl_gc_recruiting_location)) {
-        uint8_t state0 = jl_gc_state_save_and_set(ptls, JL_GC_STATE_PARALLEL);
+        uint8_t state0 = jl_atomic_exchange(&ptls->gc_state, JL_GC_STATE_PARALLEL); 
         void *location = jl_atomic_load_acquire(&jl_gc_recruiting_location);
         if (location)
             ((void (*)(jl_ptls_t))location)(ptls);
-        jl_gc_state_set(ptls, state0, JL_GC_STATE_PARALLEL);
+        jl_atomic_store_release(&ptls->gc_state, state0);
     }
 }
 
