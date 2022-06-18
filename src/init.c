@@ -101,8 +101,14 @@ void jl_init_stack_limits(int ismaster, void **stack_lo, void **stack_hi)
     struct rlimit rl;
     getrlimit(RLIMIT_STACK, &rl);
     size_t stacksize = rl.rlim_cur;
+// We intentionally leak a stack address here core.StackAddressEscape
+#  ifndef __clang_analyzer__
     *stack_hi = (void*)&stacksize;
     *stack_lo = (void*)((char*)*stack_hi - stacksize);
+#  else
+    *stack_hi = 0;
+    *stack_lo = 0;
+#  endif
 #endif
 }
 
@@ -706,6 +712,7 @@ JL_DLLEXPORT void julia_init(JL_IMAGE_SEARCH rel)
     }
 
     jl_init_rand();
+    jl_init_profile_lock();
     jl_init_runtime_ccall();
     jl_init_tasks();
     jl_init_threading();
