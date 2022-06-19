@@ -1705,84 +1705,29 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
 }
 
 // TODO: write docstring
-jl_gc_ws_array_t *gc_create_ws_array(size_t capacity)
-{
-    jl_gc_ws_array_t *a = (jl_gc_ws_array_t *)malloc(sizeof(jl_gc_ws_array_t));
-    a->buffer = (jl_value_t **)malloc(capacity * sizeof(jl_value_t *));
-    a->capacity = capacity;
-    return a;
-}
-
-// TODO: write docstring
 jl_value_t *gc_markqueue_steal_from(jl_gc_markqueue_t *mq)
 {
-    int64_t t = jl_atomic_load_acquire(&mq->top);
-    jl_fence();
-    int64_t b = jl_atomic_load_acquire(&mq->bottom);
-    jl_value_t *v = NULL;
-    if (t < b) {
-        jl_gc_ws_array_t *a = jl_atomic_load_relaxed(&mq->array);
-        v = jl_atomic_load_relaxed((_Atomic(jl_value_t *) *)&a->buffer[t % a->capacity]);
-        if (!jl_atomic_cmpswap(&mq->top, &t, t + 1))
-            return NULL;
-    }
-    return v;
+    return (jl_value_t *)ws_queue_steal_from(&mq->q);
 }
 
 // TODO: write docstring
-jl_gc_ws_array_t *gc_markqueue_resize(jl_gc_markqueue_t *mq)
+void gc_markqueue_resize(jl_gc_markqueue_t *mq)
 {
-    size_t old_top = jl_atomic_load_relaxed(&mq->top);
-    jl_gc_ws_array_t *old_a = jl_atomic_load_relaxed(&mq->array);
-    jl_gc_ws_array_t *new_a = gc_create_ws_array(2 * old_a->capacity);
-    // Copy elements into new buffer
-    for (size_t i = 0; i < old_a->capacity; ++i) {
-        new_a->buffer[(old_top + i) % (2 * old_a->capacity)] =
-            old_a->buffer[(old_top + i) % old_a->capacity];
-    }
-    jl_atomic_store_relaxed(&mq->array, new_a);
+    ws_array_t *old_a = ws_queue_resize(&mq->q);
     // Buffer will be reclaimed at the end of marking
     arraylist_push(mq->reclaim_set, old_a);
-    return new_a;
 }
 
 // TODO: write docstring
 void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *v)
 {
-    int64_t b = jl_atomic_load_relaxed(&mq->bottom);
-    int64_t t = jl_atomic_load_acquire(&mq->top);
-    jl_gc_ws_array_t *a = jl_atomic_load_relaxed(&mq->array);
-    if (b - t > a->capacity - 1) {
-        // Queue is full: resize it
-        a = gc_markqueue_resize(mq);
-    }
-    jl_atomic_store_relaxed((_Atomic(jl_value_t *) *)&a->buffer[b % a->capacity], v);
-    jl_fence_release();
-    jl_atomic_store_relaxed(&mq->bottom, b + 1);
+    ws_queue_push(&mq->q, v);
 }
 
 // TODO: write docstring
 jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 {
-    int64_t b = jl_atomic_load_relaxed(&mq->bottom) - 1;
-    jl_gc_ws_array_t *a = jl_atomic_load_relaxed(&mq->array);
-    jl_atomic_store_relaxed(&mq->bottom, b);
-    jl_fence();
-    int64_t t = jl_atomic_load_relaxed(&mq->top);
-    jl_value_t *v;
-    if (t <= b) {
-        v = jl_atomic_load_relaxed((_Atomic(jl_value_t *) *)&a->buffer[b % a->capacity]);
-        if (t == b) {
-            if (!jl_atomic_cmpswap(&mq->top, &t, t + 1))
-                v = NULL;
-            jl_atomic_store_relaxed(&mq->bottom, b + 1);
-        }
-    }
-    else {
-        v = NULL;
-        jl_atomic_store_relaxed(&mq->bottom, b + 1);
-    }
-    return v;
+    return (jl_value_t *)ws_queue_pop(&mq->q);
 }
 
 // TODO: write docstring
@@ -2967,11 +2912,15 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     gc_cache->nbig_obj = 0;
 
     // Initialize gc mark queue
+
+    // Work-stealing queue
     size_t init_size = 1024;
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
-    mq->top = 0;
-    mq->bottom = 0;
-    mq->array = gc_create_ws_array(init_size);
+    ws_queue_t *q = &mq->q;
+    q->array = create_ws_array(init_size);
+    q->top = 0;
+    q->bottom = 0;
+    // Reclaim set (buffers lazily collected at the end of marking)
     size_t reclaim_set_size = 32;
     arraylist_t *a = (arraylist_t *)malloc(sizeof(arraylist_t));
     mq->reclaim_set = arraylist_new(a, reclaim_set_size);

@@ -183,10 +183,11 @@ int64_t jl_safepoint_master_count_work(jl_ptls_t ptls)
         jl_ptls_t ptls2 = jl_all_tls_states[i];
         if (jl_atomic_load_relaxed(&ptls2->gc_state) == JL_GC_STATE_PARALLEL) {
             jl_gc_markqueue_t *mq2 = &ptls2->mark_queue;
+            ws_queue_t *q2 = &mq2->q;
             // This count can be slightly off, but it doesn't matter
             // for recruitment heuristics
-            int64_t b2 = jl_atomic_load_relaxed(&mq2->bottom);
-            int64_t t2 = jl_atomic_load_relaxed(&mq2->top);
+            int64_t b2 = jl_atomic_load_relaxed(&q2->bottom);
+            int64_t t2 = jl_atomic_load_relaxed(&q2->top);
             work += b2 - t2;
         }
     }
@@ -258,8 +259,8 @@ void jl_safepoint_wait_gc(void)
             // Clean-up buffers from `reclaim_set`
             jl_gc_markqueue_t *mq = &ptls->mark_queue;
             arraylist_t *rs = mq->reclaim_set;
-            jl_gc_ws_array_t *a;
-            while ((a = (jl_gc_ws_array_t *)arraylist_pop(rs))) {
+            ws_array_t *a;
+            while ((a = (ws_array_t *)arraylist_pop(rs))) {
                 free(a->buffer);
                 free(a);
             }

@@ -5,6 +5,7 @@
 #define JL_THREADS_H
 
 #include "julia_atomics.h"
+#include "wsqueue.h"
 #ifndef _OS_WINDOWS_
 #include "pthread.h"
 #endif
@@ -168,19 +169,8 @@ typedef struct {
     arraylist_t free_stacks[JL_N_STACK_POOLS];
 } jl_thread_heap_t;
 
-// Cache of thread local change to global metadata during GC
-// This is sync'd after marking.
-typedef union _jl_gc_mark_data jl_gc_mark_data_t;
-
 typedef struct {
-    struct _jl_value_t **buffer;
-    size_t capacity;
-} jl_gc_ws_array_t;
-
-typedef struct {
-    _Atomic(int64_t) top;
-    _Atomic(int64_t) bottom;
-    _Atomic(jl_gc_ws_array_t *) array;
+    ws_queue_t q;
     arraylist_t *reclaim_set;
 } jl_gc_markqueue_t;
 
