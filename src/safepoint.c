@@ -169,18 +169,14 @@ int64_t jl_safepoint_master_count_work(jl_ptls_t ptls)
 {
     int64_t work = 0;
     for (int i = 0; i < jl_n_threads; i++) {
-        if (i == ptls->tid)
-            continue;
         jl_ptls_t ptls2 = jl_all_tls_states[i];
-        if (jl_atomic_load_relaxed(&ptls2->gc_state) == JL_GC_STATE_PARALLEL) {
-            jl_gc_markqueue_t *mq2 = &ptls2->mark_queue;
-            ws_queue_t *q2 = &mq2->q;
-            // This count can be slightly off, but it doesn't matter
-            // for recruitment heuristics
-            int64_t b2 = jl_atomic_load_relaxed(&q2->bottom);
-            int64_t t2 = jl_atomic_load_relaxed(&q2->top);
-            work += b2 - t2;
-        }
+        jl_gc_markqueue_t *mq2 = &ptls2->mark_queue;
+        ws_queue_t *q2 = &mq2->q;
+        // This count can be slightly off, but it doesn't matter
+        // for recruitment heuristics
+        int64_t b2 = jl_atomic_load_relaxed(&q2->bottom);
+        int64_t t2 = jl_atomic_load_relaxed(&q2->top);
+        work += b2 - t2;
     }
     return work;
 }
@@ -190,9 +186,7 @@ void jl_safepoint_master_notify_all(jl_ptls_t ptls)
     for (int i = 0; i < jl_n_threads; i++) {
         if (i == ptls->tid)
             continue;
-        uv_mutex_lock(&safepoint_sleep_locks[i]);
         uv_cond_signal(&safepoint_wake_signals[i]);
-        uv_mutex_unlock(&safepoint_sleep_locks[i]);
     }
 }
 
@@ -203,9 +197,7 @@ void jl_safepoint_master_recruit_workers(jl_ptls_t ptls, size_t nworkers)
             continue;
         jl_ptls_t ptls2 = jl_all_tls_states[i];
         if (jl_atomic_load_acquire(&ptls2->gc_state) == JL_GC_STATE_WAITING) {
-            uv_mutex_lock(&safepoint_sleep_locks[i]);
             uv_cond_signal(&safepoint_wake_signals[i]);
-            uv_mutex_unlock(&safepoint_sleep_locks[i]);
             nworkers--;
         }
     }
