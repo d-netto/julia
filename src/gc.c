@@ -2335,7 +2335,6 @@ STATIC_INLINE void _gc_mark_loop(jl_ptls_t ptls)
                 goto mark;
         }
     }
-    jl_atomic_fetch_add(&nworkers_marking, -1);
 }
 
 void gc_mark_loop(jl_ptls_t ptls)
