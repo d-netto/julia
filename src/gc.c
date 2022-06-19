@@ -2004,8 +2004,6 @@ JL_DLLEXPORT void jl_gc_mark_queue_objarray(jl_ptls_t ptls, jl_value_t *parent,
 // TODO: write docstring
 void gc_set_recruit(jl_ptls_t ptls, void *addr)
 {
-    jl_fence();
-    jl_atomic_store_release(&jl_gc_recruiting_location, addr);
     if (jl_n_threads > 1)
         jl_wake_libuv();
     for (int i = 0; i < jl_n_threads; i++) {
@@ -2273,7 +2271,7 @@ STATIC_INLINE void _gc_mark_loop(jl_ptls_t ptls)
     steal : {
         // Steal from another thread
         for (int i = 0; i < 2 * jl_n_threads; i++) {
-            size_t victim = rand() % jl_n_threads;
+            size_t victim = jl_rand() % jl_n_threads;
             jl_gc_markqueue_t *mq2 = &jl_all_tls_states[victim]->mark_queue;
             new_obj = gc_markqueue_steal_from(mq2);
             if (new_obj)
@@ -2571,9 +2569,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         gc_invoke_callbacks(jl_gc_cb_root_scanner_t,
             gc_cblist_root_scanner, (collection));
     }
-    // Mark-loop entry/exit sequence
     gc_mark_loop_master(ptls);
-    jl_atomic_store_release(&jl_gc_recruiting_location, NULL);
 
     gc_num.since_sweep += gc_num.allocd;
     JL_PROBE_GC_MARK_END(scanned_bytes, perm_scanned_bytes);

@@ -44,8 +44,8 @@ uint8_t jl_safepoint_enable_cnt[3] = {0, 0, 0};
 // fight on the safepoint lock...
 uv_mutex_t safepoint_lock;
 
-_Atomic(void *) jl_gc_recruiting_location = NULL;
 _Atomic(int32_t) jl_gc_safepoint_master = -1;
+extern void gc_mark_loop(jl_ptls_t ptls);
 extern _Atomic(int32_t) nworkers_marking;
 
 extern uv_mutex_t *safepoint_sleep_locks;
@@ -165,15 +165,6 @@ int jl_safepoint_all_workers_done(jl_ptls_t ptls)
     return (jl_atomic_load_acquire(&nworkers_marking) == 0);    
 }
 
-void jl_safepoint_try_recruit(jl_ptls_t ptls)
-{
-    if (jl_atomic_load_relaxed(&jl_gc_recruiting_location)) {
-        void *location = jl_atomic_load_acquire(&jl_gc_recruiting_location);
-        if (location)
-            ((void (*)(jl_ptls_t))location)(ptls);
-    }
-}
-
 int64_t jl_safepoint_master_count_work(jl_ptls_t ptls)
 {
     int64_t work = 0;
@@ -236,13 +227,12 @@ int jl_safepoint_master_end_marking(jl_ptls_t ptls)
                 if (work > 2) {
                     jl_safepoint_master_recruit_workers(ptls, work - 1);
                     jl_atomic_store_release(&jl_gc_safepoint_master, -1);
-                    jl_safepoint_try_recruit(ptls);
+                    gc_mark_loop(ptls);
                     return 0;
                 }
                 goto spin;
             }
         }
-        jl_atomic_store_release(&jl_gc_recruiting_location, NULL);
         jl_atomic_store_release(&jl_gc_safepoint_master, -1);
         jl_safepoint_master_notify_all(ptls);
         return 1;
@@ -271,7 +261,7 @@ void jl_safepoint_wait_gc(void)
                                &safepoint_sleep_locks[ptls->tid], timeout_ns)) {
             // Stopped waiting because we got a notification
             // from safepoint master: try to get recruited
-            jl_safepoint_try_recruit(ptls);
+            gc_mark_loop(ptls);
         }
         uv_mutex_unlock(&safepoint_sleep_locks[ptls->tid]);
         // Otherwise, just go to the top of the loop and try

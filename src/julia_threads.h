@@ -359,9 +359,6 @@ int8_t jl_gc_safe_leave(jl_ptls_t ptls, int8_t state); // Can be a safepoint
 #endif
 JL_DLLEXPORT void (jl_gc_safepoint)(void);
 JL_DLLEXPORT void (jl_gc_safepoint)(void);
-// Either NULL, or the address of a function that threads can call while
-// waiting for the GC, which will recruit them into a concurrent GC operation.
-extern _Atomic(void *) jl_gc_recruiting_location;
 
 JL_DLLEXPORT void jl_gc_enable_finalizers(struct _jl_task_t *ct, int on);
 JL_DLLEXPORT void jl_gc_disable_finalizers_internal(void);
