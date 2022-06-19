@@ -1,7 +1,7 @@
 // This file is a part of Julia. License is MIT: https://julialang.org/license
 
-#ifndef WS_queue_H
-#define WS_queue_H
+#ifndef WS_QUEUE_H
+#define WS_QUEUE_H
 
 #include "julia_atomics.h"
 
@@ -44,3 +44,4 @@ void *ws_queue_steal_from(ws_queue_t *dq);
 #endif
 
 #endif
+
