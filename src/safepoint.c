@@ -162,25 +162,15 @@ void jl_safepoint_end_gc(void)
 
 int jl_safepoint_all_workers_done(jl_ptls_t ptls)
 {
-    for (int i = 0; i < jl_n_threads; i++) {
-        if (i == ptls->tid)
-            continue;
-        jl_ptls_t ptls2 = jl_all_tls_states[i];
-        if (jl_atomic_load_acquire(&ptls2->gc_state) == JL_GC_STATE_PARALLEL) {
-            return 0;
-        }
-    }
     return (jl_atomic_load_acquire(&nworkers_marking) == 0);    
 }
 
 void jl_safepoint_try_recruit(jl_ptls_t ptls)
 {
     if (jl_atomic_load_relaxed(&jl_gc_recruiting_location)) {
-        uint8_t state0 = jl_atomic_exchange(&ptls->gc_state, JL_GC_STATE_PARALLEL); 
         void *location = jl_atomic_load_acquire(&jl_gc_recruiting_location);
         if (location)
             ((void (*)(jl_ptls_t))location)(ptls);
-        jl_atomic_store_release(&ptls->gc_state, state0);
     }
 }
 

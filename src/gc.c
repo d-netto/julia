@@ -2311,9 +2311,8 @@ NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_upda
 }
 
 // TODO: write docstring
-void gc_mark_loop(jl_ptls_t ptls)
+STATIC_INLINE void _gc_mark_loop(jl_ptls_t ptls)
 {
-    jl_atomic_fetch_add(&nworkers_marking, 1);
     jl_value_t *new_obj;
     pop : {
         new_obj = gc_markqueue_pop(&ptls->mark_queue);
@@ -2339,13 +2338,24 @@ void gc_mark_loop(jl_ptls_t ptls)
     jl_atomic_fetch_add(&nworkers_marking, -1);
 }
 
+void gc_mark_loop(jl_ptls_t ptls)
+{
+    jl_atomic_fetch_add(&nworkers_marking, 1);
+    uint8_t state0 = jl_atomic_exchange(&ptls->gc_state, JL_GC_STATE_PARALLEL);
+    _gc_mark_loop(ptls);
+    jl_atomic_store_release(&ptls->gc_state, state0);
+    jl_atomic_fetch_add(&nworkers_marking, -1);
+}
+
 // TODO: write docstring
 JL_EXTENSION NOINLINE void gc_mark_loop_master(jl_ptls_t ptls)
 {
+    jl_atomic_fetch_add(&nworkers_marking, 1);
     uint8_t state0 = jl_atomic_exchange(&ptls->gc_state, JL_GC_STATE_PARALLEL);
     gc_set_recruit(ptls, (void *)gc_mark_loop);
-    gc_mark_loop(ptls);
+    _gc_mark_loop(ptls);
     jl_atomic_store_release(&ptls->gc_state, state0);
+    jl_atomic_fetch_add(&nworkers_marking, -1);
     jl_safepoint_wait_gc();
 }
 
