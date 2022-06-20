@@ -2290,7 +2290,7 @@ void gc_mark_loop(jl_ptls_t ptls)
 }
 
 // TODO: write docstring
-JL_EXTENSION NOINLINE void gc_mark_loop_master(jl_ptls_t ptls)
+STATIC_INLINE void gc_mark_loop_master(jl_ptls_t ptls)
 {
     jl_atomic_fetch_add(&nworkers_marking, 1);
     uint8_t state0 = jl_atomic_exchange(&ptls->gc_state, JL_GC_STATE_PARALLEL);

@@ -47,7 +47,7 @@ uv_mutex_t safepoint_lock;
 jl_mutex_t safepoint_master_lock;
 extern uv_mutex_t *safepoint_sleep_locks;
 extern uv_cond_t *safepoint_wake_signals;
-const uint64_t timeout_ns = 10000;
+const uint64_t timeout_ns = 1000;
 
 extern _Atomic(int32_t) nworkers_marking;
 extern void gc_mark_loop(jl_ptls_t ptls);
@@ -239,13 +239,6 @@ void jl_safepoint_wait_pmark(void)
     // There are still workers in the mark-loop: go through
     // spin-master protocol
     while(!jl_safepoint_master_end_marking(ptls)) {
-        jl_gc_markqueue_t *mq = &ptls->mark_queue;
-        arraylist_t *rs = mq->reclaim_set;
-        ws_array_t *a;
-        while ((a = (ws_array_t *)arraylist_pop(rs))) {
-            free(a->buffer);
-            free(a);
-        }
         uv_mutex_lock(&safepoint_sleep_locks[ptls->tid]);
         if (!uv_cond_timedwait(&safepoint_wake_signals[ptls->tid],
                                &safepoint_sleep_locks[ptls->tid], timeout_ns)) {
@@ -259,13 +252,27 @@ void jl_safepoint_wait_pmark(void)
     }
 }
 
-void jl_safepoint_wait_gc(void)
+void jl_safepoint_wait_sweeping(void)
 {
     while (jl_atomic_load_relaxed(&jl_gc_running) ||
            jl_atomic_load_acquire(&jl_gc_running)) {
-        jl_safepoint_wait_pmark();
         jl_cpu_pause();
     }
+}
+
+void jl_safepoint_wait_gc(void)
+{
+    jl_safepoint_wait_pmark();
+    // Clean-up buffers from `reclaim_set`
+    jl_ptls_t ptls = jl_current_task->ptls;
+    jl_gc_markqueue_t *mq = &ptls->mark_queue;
+    arraylist_t *rs = mq->reclaim_set;
+    ws_array_t *a;
+    while ((a = (ws_array_t *)arraylist_pop(rs))) {
+        free(a->buffer);
+        free(a);
+    }
+    jl_safepoint_wait_sweeping();
 }
 
 void jl_safepoint_enable_sigint(void)
