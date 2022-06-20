@@ -2009,7 +2009,7 @@ void gc_set_recruit(jl_ptls_t ptls, void *addr)
     for (int i = 0; i < jl_n_threads; i++) {
         if (i == ptls->tid)
             continue;
-        jl_wakeup_thread(i);
+        uv_cond_signal(&jl_all_tls_states[i]->wake_signal);
     }
 }
 

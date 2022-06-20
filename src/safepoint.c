@@ -44,13 +44,14 @@ uint8_t jl_safepoint_enable_cnt[3] = {0, 0, 0};
 // fight on the safepoint lock...
 uv_mutex_t safepoint_lock;
 
-_Atomic(int32_t) jl_gc_safepoint_master = -1;
-extern void gc_mark_loop(jl_ptls_t ptls);
-extern _Atomic(int32_t) nworkers_marking;
-
+jl_mutex_t safepoint_master_lock;
 extern uv_mutex_t *safepoint_sleep_locks;
 extern uv_cond_t *safepoint_wake_signals;
-const uint64_t timeout_ns = 1000;
+const uint64_t timeout_ns = 10000;
+
+extern _Atomic(int32_t) nworkers_marking;
+extern void gc_mark_loop(jl_ptls_t ptls);
+
 
 static void jl_safepoint_enable(int idx) JL_NOTSAFEPOINT
 {
@@ -95,6 +96,7 @@ static void jl_safepoint_disable(int idx) JL_NOTSAFEPOINT
 void jl_safepoint_init(void)
 {
     uv_mutex_init(&safepoint_lock);
+    jl_mutex_init(&safepoint_master_lock); 
     // jl_page_size isn't available yet.
     size_t pgsz = jl_getpagesize();
 #ifdef _OS_WINDOWS_
@@ -209,7 +211,7 @@ int jl_safepoint_master_end_marking(jl_ptls_t ptls)
     if (jl_safepoint_all_workers_done(ptls))
         return 1;
     int no_master = -1;
-    if (jl_atomic_cmpswap(&jl_gc_safepoint_master, &no_master, ptls->tid)) {
+    if (jl_mutex_trylock_nogc(&safepoint_master_lock)) {
         spin : {
             // Check if all threads have finished marking
             if (!jl_safepoint_all_workers_done(ptls)) {
@@ -218,15 +220,15 @@ int jl_safepoint_master_end_marking(jl_ptls_t ptls)
                 // relinquishing the safepoint master status
                 if (work > 2) {
                     jl_safepoint_master_recruit_workers(ptls, work - 1);
-                    jl_atomic_store_release(&jl_gc_safepoint_master, -1);
+                    jl_mutex_unlock_nogc(&safepoint_master_lock);
                     gc_mark_loop(ptls);
                     return 0;
                 }
                 goto spin;
             }
         }
-        jl_atomic_store_release(&jl_gc_safepoint_master, -1);
         jl_safepoint_master_notify_all(ptls);
+        jl_mutex_unlock_nogc(&safepoint_master_lock);
         return 1;
     }
     return 0;
