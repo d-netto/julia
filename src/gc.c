@@ -1873,7 +1873,7 @@ STATIC_INLINE void gc_mark_stack(jl_ptls_t ptls, jl_gcframe_t *s, uint32_t nroot
                 new_obj = (jl_value_t *)gc_read_stack(&rts[i], offset, lb, ub);
                 if (gc_ptr_tag(new_obj, 1)) {
                     // handle tagged pointers in finalizer list
-                    new_obj = gc_ptr_clear_tag(new_obj, 1);
+                    new_obj = (jl_value_t *)gc_ptr_clear_tag(new_obj, 1);
                     i++;
                 }
             }

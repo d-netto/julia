@@ -812,6 +812,8 @@ int jl_safepoint_start_gc(void);
 // up waiting threads if there's any.
 // The caller should restore `gc_state` **AFTER** calling this function.
 void jl_safepoint_end_gc(void);
+// TODO: write docstring
+void jl_safepoint_wait_pmark(void);
 // Wait for the GC to finish
 // This function does **NOT** modify the `gc_state` to inform the GC thread
 // The caller should set it **BEFORE** calling this function.

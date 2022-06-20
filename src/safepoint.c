@@ -210,7 +210,6 @@ int jl_safepoint_master_end_marking(jl_ptls_t ptls)
     // Fast path for mark-loop termination
     if (jl_safepoint_all_workers_done(ptls))
         return 1;
-    int no_master = -1;
     if (jl_mutex_trylock_nogc(&safepoint_master_lock)) {
         spin : {
             // Check if all threads have finished marking
@@ -239,7 +238,7 @@ void jl_safepoint_wait_pmark(void)
     jl_ptls_t ptls = jl_current_task->ptls;
     // There are still workers in the mark-loop: go through
     // spin-master protocol
-    while(jl_atomic_load_acquire(&nworkers_marking) != 0) {
+    while(!jl_safepoint_master_end_marking(ptls)) {
         jl_gc_markqueue_t *mq = &ptls->mark_queue;
         arraylist_t *rs = mq->reclaim_set;
         ws_array_t *a;
@@ -262,7 +261,6 @@ void jl_safepoint_wait_pmark(void)
 
 void jl_safepoint_wait_gc(void)
 {
-    jl_ptls_t ptls = jl_current_task->ptls;
     while (jl_atomic_load_relaxed(&jl_gc_running) ||
            jl_atomic_load_acquire(&jl_gc_running)) {
         jl_safepoint_wait_pmark();
