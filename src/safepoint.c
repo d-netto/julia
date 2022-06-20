@@ -234,21 +234,18 @@ int jl_safepoint_master_end_marking(jl_ptls_t ptls)
     return 0;
 }
 
-void jl_safepoint_wait_gc(void)
+void jl_safepoint_wait_pmark(void)
 {
     jl_ptls_t ptls = jl_current_task->ptls;
-    while (jl_atomic_load_relaxed(&jl_gc_running) ||
-           jl_atomic_load_acquire(&jl_gc_running)) {
-        if (jl_safepoint_master_end_marking(ptls)) {
-            // Clean-up buffers from `reclaim_set`
-            jl_gc_markqueue_t *mq = &ptls->mark_queue;
-            arraylist_t *rs = mq->reclaim_set;
-            ws_array_t *a;
-            while ((a = (ws_array_t *)arraylist_pop(rs))) {
-                free(a->buffer);
-                free(a);
-            }
-            break;
+    // There are still workers in the mark-loop: go through
+    // spin-master protocol
+    while(jl_atomic_load_acquire(&nworkers_marking) != 0) {
+        jl_gc_markqueue_t *mq = &ptls->mark_queue;
+        arraylist_t *rs = mq->reclaim_set;
+        ws_array_t *a;
+        while ((a = (ws_array_t *)arraylist_pop(rs))) {
+            free(a->buffer);
+            free(a);
         }
         uv_mutex_lock(&safepoint_sleep_locks[ptls->tid]);
         if (!uv_cond_timedwait(&safepoint_wake_signals[ptls->tid],
@@ -260,6 +257,16 @@ void jl_safepoint_wait_gc(void)
         uv_mutex_unlock(&safepoint_sleep_locks[ptls->tid]);
         // Otherwise, just go to the top of the loop and try
         // to become a safepoint master
+    }
+}
+
+void jl_safepoint_wait_gc(void)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    while (jl_atomic_load_relaxed(&jl_gc_running) ||
+           jl_atomic_load_acquire(&jl_gc_running)) {
+        jl_safepoint_wait_pmark();
+        jl_cpu_pause();
     }
 }
 

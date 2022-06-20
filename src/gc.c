@@ -2298,7 +2298,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop_master(jl_ptls_t ptls)
     _gc_mark_loop(ptls);
     jl_atomic_store_release(&ptls->gc_state, state0);
     jl_atomic_fetch_add(&nworkers_marking, -1);
-    jl_safepoint_wait_gc();
+    jl_safepoint_wait_pmark();
 }
 
 static void gc_premark(jl_ptls_t ptls2)
