@@ -47,7 +47,7 @@ uv_mutex_t safepoint_lock;
 jl_mutex_t safepoint_master_lock;
 extern uv_mutex_t *safepoint_sleep_locks;
 extern uv_cond_t *safepoint_wake_signals;
-const uint64_t timeout_ns = 100000;
+const uint64_t timeout_ns = 1e6;
 
 extern _Atomic(int32_t) nworkers_marking;
 extern void gc_mark_loop(jl_ptls_t ptls);
