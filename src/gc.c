@@ -2004,6 +2004,7 @@ JL_DLLEXPORT void jl_gc_mark_queue_objarray(jl_ptls_t ptls, jl_value_t *parent,
 // TODO: write docstring
 void gc_set_recruit(jl_ptls_t ptls, void *addr)
 {
+    jl_fence();
     if (jl_n_threads > 1)
         jl_wake_libuv();
     for (int i = 0; i < jl_n_threads; i++) {
