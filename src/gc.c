@@ -2002,7 +2002,7 @@ JL_DLLEXPORT void jl_gc_mark_queue_objarray(jl_ptls_t ptls, jl_value_t *parent,
 }
 
 // TODO: write docstring
-void gc_set_recruit(jl_ptls_t ptls, void *addr)
+STATIC_INLINE void gc_set_recruit(jl_ptls_t ptls, void *addr)
 {
     jl_fence();
     if (jl_n_threads > 1)
@@ -2272,8 +2272,9 @@ STATIC_INLINE void _gc_mark_loop(jl_ptls_t ptls)
     steal : {
         // Steal from another thread
         for (int i = 0; i < 2 * jl_n_threads; i++) {
-            size_t victim = jl_rand() % jl_n_threads;
-            jl_gc_markqueue_t *mq2 = &jl_all_tls_states[victim]->mark_queue;
+            size_t v1 = rand() % jl_n_threads;
+            size_t v2 = rand() % jl_n_threads;
+            jl_gc_markqueue_t *mq2 = &jl_all_tls_states[MAX(v1, v2)]->mark_queue;
             new_obj = gc_markqueue_steal_from(mq2);
             if (new_obj)
                 goto mark;
@@ -2326,29 +2327,26 @@ static void gc_premark(jl_ptls_t ptls2)
     }
 }
 
-static void gc_queue_thread_local(jl_gc_markqueue_t *mq, jl_ptls_t ptls2)
+static void gc_queue_thread_local(jl_gc_markqueue_t *mq, jl_ptls_t ptls)
 {
-    gc_try_claim_and_push(mq, jl_atomic_load_relaxed(&ptls2->current_task), NULL);
-    gc_try_claim_and_push(mq, ptls2->root_task, NULL);
-    if (ptls2->next_task)
-        gc_try_claim_and_push(mq, ptls2->next_task, NULL);
-    if (ptls2->previous_task) // shouldn't be necessary, but no reason not to
-        gc_try_claim_and_push(mq, ptls2->previous_task, NULL);
-    if (ptls2->previous_exception)
-        gc_try_claim_and_push(mq, ptls2->previous_exception, NULL);
+    gc_try_claim_and_push(mq, jl_atomic_load_relaxed(&ptls->current_task), NULL);
+    gc_try_claim_and_push(mq, ptls->root_task, NULL);
+    gc_try_claim_and_push(mq, ptls->next_task, NULL);
+    gc_try_claim_and_push(mq, ptls->previous_task, NULL);
+    gc_try_claim_and_push(mq, ptls->previous_exception, NULL);
 }
 
-static void gc_queue_bt_buf(jl_gc_markqueue_t *mq, jl_ptls_t ptls2)
+static void gc_queue_bt_buf(jl_gc_markqueue_t *mq, jl_ptls_t ptls)
 {
-    jl_bt_element_t *bt_data = ptls2->bt_data;
-    size_t bt_size = ptls2->bt_size;
+    jl_bt_element_t *bt_data = ptls->bt_data;
+    size_t bt_size = ptls->bt_size;
     for (size_t i = 0; i < bt_size; i += jl_bt_entry_size(bt_data + i)) {
         jl_bt_element_t *bt_entry = bt_data + i;
         if (jl_bt_is_native(bt_entry))
             continue;
         size_t njlvals = jl_bt_num_jlvals(bt_entry);
         for (size_t j = 0; j < njlvals; j++)
-            gc_try_claim_and_push(mq, jl_bt_entry_jlvalue(bt_entry, j), NULL);
+            gc_try_claim_and_push(&ptls->mark_queue, jl_bt_entry_jlvalue(bt_entry, j), NULL);
     }
 }
 
@@ -2386,10 +2384,8 @@ static void gc_mark_roots(jl_gc_markqueue_t *mq)
     // modules
     gc_try_claim_and_push(mq, jl_main_module, NULL);
     // invisible builtin values
-    if (jl_an_empty_vec_any)
-        gc_try_claim_and_push(mq, jl_an_empty_vec_any, NULL);
-    if (jl_module_init_order)
-        gc_try_claim_and_push(mq, jl_module_init_order, NULL);
+    gc_try_claim_and_push(mq, jl_an_empty_vec_any, NULL);
+    gc_try_claim_and_push(mq, jl_module_init_order, NULL);
     for (size_t i = 0; i < jl_current_modules.size; i += 2) {
         if (jl_current_modules.table[i + 1] != HT_NOTFOUND) {
             gc_try_claim_and_push(mq, jl_current_modules.table[i], NULL);
@@ -2400,14 +2396,11 @@ static void gc_mark_roots(jl_gc_markqueue_t *mq)
         jl_typemap_entry_t *v = jl_atomic_load_relaxed(&call_cache[i]);
         gc_try_claim_and_push(mq, v, NULL);
     }
-    if (jl_all_methods)
-        gc_try_claim_and_push(mq, jl_all_methods, NULL);
-    if (_jl_debug_method_invalidation)
-        gc_try_claim_and_push(mq, _jl_debug_method_invalidation, NULL);
+    gc_try_claim_and_push(mq, jl_all_methods, NULL);
+    gc_try_claim_and_push(mq, _jl_debug_method_invalidation, NULL);
     // constants
     gc_try_claim_and_push(mq, jl_emptytuple_type, NULL);
-    if (cmpswap_names)
-        gc_try_claim_and_push(mq, cmpswap_names, NULL);
+    gc_try_claim_and_push(mq, cmpswap_names, NULL);
 }
 
 // find unmarked objects that need to be finalized from the finalizer list "list".
@@ -2553,7 +2546,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     // 1. fix GC bits of objects in the remset.
     for (int t_i = 0; t_i < jl_n_threads; t_i++)
         gc_premark(jl_all_tls_states[t_i]);
-    
+
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
         // 2.1. mark every thread local root
@@ -2748,11 +2741,11 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     live_bytes += -gc_num.freed + gc_num.since_sweep;
 
     if (collection == JL_GC_AUTO) {
-      // If the current interval is larger than half the live data decrease the interval
-      int64_t half = live_bytes/2;
-      if (gc_num.interval > half) gc_num.interval = half;
-      // But never go below default
-      if (gc_num.interval < default_collect_interval) gc_num.interval = default_collect_interval;
+        // If the current interval is larger than half the live data decrease the interval
+        int64_t half = live_bytes/2;
+        if (gc_num.interval > half) gc_num.interval = half;
+        // But never go below default
+        if (gc_num.interval < default_collect_interval) gc_num.interval = default_collect_interval;
     }
 
     if (gc_num.interval + live_bytes > max_total_memory) {
@@ -2867,7 +2860,7 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
 void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_markqueue_t *mq)
 {
     for (size_t i = 0; i < jl_n_threads; i++)
-        gc_queue_thread_local(mq, jl_all_tls_states[i]);
+        gc_queue_thread_local(&ptls->mark_queue, jl_all_tls_states[i]);
     gc_mark_roots(mq);
 }
 
