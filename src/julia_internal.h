@@ -1550,6 +1550,7 @@ jl_sym_t *_jl_symbol(const char *str, size_t len) JL_NOTSAFEPOINT;
 float __gnu_h2f_ieee(uint16_t param) JL_NOTSAFEPOINT;
 uint16_t __gnu_f2h_ieee(float param) JL_NOTSAFEPOINT;
 
+// TODO: need to cite where I got this from?
 #if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 #define jl_prefetch(p) __builtin_prefetch((p), 1, 3)
 #else

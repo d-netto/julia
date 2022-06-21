@@ -1772,7 +1772,7 @@ STATIC_INLINE void gc_mark_obj8(jl_ptls_t ptls, char *obj8_parent, uint8_t *obj8
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     for (; obj8_begin < obj8_end; obj8_begin++) {
-	new_obj = ((jl_value_t **)obj8_parent)[*obj8_begin];
+        new_obj = ((jl_value_t **)obj8_parent)[*obj8_begin];
         if (new_obj)
             verify_parent2("object", obj8_parent, &new_obj, "field(%d)",
                            gc_slot_to_fieldidx(obj8_parent, &new_obj));
@@ -1789,7 +1789,7 @@ STATIC_INLINE void gc_mark_obj16(jl_ptls_t ptls, char *obj16_parent, uint16_t *o
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     for (; obj16_begin < obj16_end; obj16_begin++) {
-	    new_obj = ((jl_value_t **)obj16_parent)[*obj16_begin];
+        new_obj = ((jl_value_t **)obj16_parent)[*obj16_begin];
         if (new_obj)
             verify_parent2("object", obj16_parent, &new_obj, "field(%d)",
                            gc_slot_to_fieldidx(obj16_parent, &new_obj));
@@ -1806,7 +1806,7 @@ STATIC_INLINE void gc_mark_obj32(jl_ptls_t ptls, char *obj32_parent, uint32_t *o
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     for (; obj32_begin < obj32_end; obj32_begin++) {
-	    new_obj = ((jl_value_t **)obj32_parent)[*obj32_begin];
+        new_obj = ((jl_value_t **)obj32_parent)[*obj32_begin];
         if (new_obj)
             verify_parent2("object", obj32_parent, &new_obj, "field(%d)",
                            gc_slot_to_fieldidx(obj32_parent, &new_obj));
@@ -1845,7 +1845,7 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent,
     for (; ary8_begin < ary8_end; ary8_begin += elsize) {
         for (uint8_t *pindex = elem_begin; pindex < elem_end; pindex++) {
             jl_prefetch(ary8_begin + *pindex + 4);
-	        new_obj = ary8_begin[*pindex];
+            new_obj = ary8_begin[*pindex];
             if (new_obj)
                 verify_parent2("array", ary8_parent, &new_obj, "elem(%d)",
                                gc_slot_to_arrayidx(ary8_parent, ary8_begin));
@@ -1867,7 +1867,7 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent,
     for (; ary16_begin < ary16_end; ary16_begin += elsize) {
         for (uint16_t *pindex = elem_begin; pindex < elem_end; pindex++) {
             jl_prefetch(ary16_begin + *pindex + 4);
-	        new_obj = ary16_begin[*pindex];
+            new_obj = ary16_begin[*pindex];
             if (new_obj)
                 verify_parent2("array", ary16_parent, &new_obj, "elem(%d)",
                                gc_slot_to_arrayidx(ary16_parent, ary16_begin));
