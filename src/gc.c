@@ -1721,13 +1721,33 @@ void gc_markqueue_resize(jl_gc_markqueue_t *mq)
 // TODO: write docstring
 void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *v)
 {
-    ws_queue_push(&mq->q, v);
+    ws_queue_t *q = &mq->q;
+    if (jl_n_threads == 1) {
+	if (q->bottom >= q->array->capacity)
+	    gc_markqueue_resize(mq);
+        ws_array_t *a = q->array;
+        a->buffer[q->bottom] = v;
+	q->bottom++;
+    }
+    else {
+	ws_queue_push(q, v);
+    }
 }
 
 // TODO: write docstring
 jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 {
-    return (jl_value_t *)ws_queue_pop(&mq->q);
+    ws_queue_t *q = &mq->q;
+    jl_value_t *v = NULL;
+    if (jl_n_threads == 1 && q->bottom > 0) {
+        ws_array_t *a = q->array;
+	q->bottom--;
+        v = (jl_value_t *)a->buffer[q->bottom];
+    }
+    else {
+        v = (jl_value_t *)ws_queue_pop(&mq->q);
+    }
+    return v;
 }
 
 // TODO: write docstring
@@ -1738,7 +1758,7 @@ STATIC_INLINE void gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
         return;
     jl_value_t *obj = (jl_value_t *)jl_assume(_obj);
     jl_taggedvalue_t *o = jl_astaggedvalue(obj);
-    if (!gc_old(o->header) && nptr)
+    if (nptr && !gc_old(o->header))
         *nptr |= 1;
     if (gc_try_setmark_tag(o, GC_MARKED))
         gc_markqueue_push(mq, obj);

@@ -47,7 +47,7 @@ uv_mutex_t safepoint_lock;
 jl_mutex_t safepoint_master_lock;
 extern uv_mutex_t *safepoint_sleep_locks;
 extern uv_cond_t *safepoint_wake_signals;
-const uint64_t timeout_ns = 1e6;
+const uint64_t timeout_ns = 1e3;
 
 extern _Atomic(int32_t) nworkers_marking;
 extern void gc_mark_loop(jl_ptls_t ptls);
@@ -217,7 +217,7 @@ int jl_safepoint_master_end_marking(jl_ptls_t ptls)
                 int64_t work = jl_safepoint_master_count_work(ptls);
                 // If there is enough work, recruit workers and also become a worker,
                 // relinquishing the safepoint master status
-                if (work > 2) {
+                if (work > 0) {
                     jl_safepoint_master_recruit_workers(ptls, work - 1);
                     jl_mutex_unlock_nogc(&safepoint_master_lock);
                     gc_mark_loop(ptls);
@@ -257,22 +257,22 @@ void jl_safepoint_wait_sweeping(void)
 {
     while (jl_atomic_load_relaxed(&jl_gc_running) ||
            jl_atomic_load_acquire(&jl_gc_running)) {
-        jl_cpu_pause();
+	// Clean-up buffers from `reclaim_set`
+	jl_ptls_t ptls = jl_current_task->ptls;
+	jl_gc_markqueue_t *mq = &ptls->mark_queue;
+	arraylist_t *rs = mq->reclaim_set;
+	ws_array_t *a;
+	while ((a = (ws_array_t *)arraylist_pop(rs))) {
+	    free(a->buffer);
+	    free(a);
+	}
+	jl_cpu_pause();
     }
 }
 
 void jl_safepoint_wait_gc(void)
 {
     jl_safepoint_wait_pmark();
-    // Clean-up buffers from `reclaim_set`
-    jl_ptls_t ptls = jl_current_task->ptls;
-    jl_gc_markqueue_t *mq = &ptls->mark_queue;
-    arraylist_t *rs = mq->reclaim_set;
-    ws_array_t *a;
-    while ((a = (ws_array_t *)arraylist_pop(rs))) {
-        free(a->buffer);
-        free(a);
-    }
     jl_safepoint_wait_sweeping();
 }
 

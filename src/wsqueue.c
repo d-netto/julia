@@ -1,6 +1,7 @@
 // This file is a part of Julia. License is MIT: https://julialang.org/license
 
 #include <stdlib.h>
+#include "julia.h"
 #include "wsqueue.h"
 
 #ifdef __cplusplus
@@ -20,7 +21,7 @@ void ws_queue_push(ws_queue_t *q, void *v)
     int64_t b = jl_atomic_load_relaxed(&q->bottom);
     int64_t t = jl_atomic_load_acquire(&q->top);
     ws_array_t *a = jl_atomic_load_relaxed(&q->array);
-    if (b - t > a->capacity - 1) {
+    if (__unlikely(b - t > a->capacity - 1)) {
         // Queue is full: resize it
         a = ws_queue_resize(q);
     }
@@ -51,7 +52,7 @@ void *ws_queue_pop(ws_queue_t *q)
     jl_fence();
     int64_t t = jl_atomic_load_relaxed(&q->top);
     void *v;
-    if (t <= b) {
+    if (__likely(t <= b)) {
         v = jl_atomic_load_relaxed((_Atomic(void *) *)&a->buffer[b % a->capacity]);
         if (t == b) {
             if (!jl_atomic_cmpswap(&q->top, &t, t + 1))
