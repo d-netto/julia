@@ -407,9 +407,9 @@ JL_DLLEXPORT jl_task_t *jl_task_get_next(jl_value_t *trypoptask, jl_value_t *q, 
             int8_t gc_state = jl_gc_safe_enter(ptls);
             uv_mutex_lock(&ptls->sleep_lock);
             while (may_sleep(ptls)) {
-                uv_cond_wait(&ptls->wake_signal, &ptls->sleep_lock);
                 jl_safepoint_wait_gc();
-            }
+	        uv_cond_wait(&ptls->wake_signal, &ptls->sleep_lock);
+	    }
             assert(jl_atomic_load_relaxed(&ptls->sleep_check_state) == not_sleeping);
             uv_mutex_unlock(&ptls->sleep_lock);
             JULIA_DEBUG_SLEEPWAKE( ptls->sleep_leave = cycleclock() );

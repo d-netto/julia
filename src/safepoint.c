@@ -176,9 +176,9 @@ int64_t jl_safepoint_master_count_work(jl_ptls_t ptls)
         ws_queue_t *q2 = &mq2->q;
         // This count can be slightly off, but it doesn't matter
         // for recruitment heuristics
-        int64_t b2 = jl_atomic_load_relaxed(&q2->bottom);
         int64_t t2 = jl_atomic_load_relaxed(&q2->top);
-        work += b2 - t2;
+        int64_t b2 = jl_atomic_load_relaxed(&q2->bottom);
+	work += b2 - t2;
     }
     return work;
 }
@@ -217,7 +217,7 @@ int jl_safepoint_master_end_marking(jl_ptls_t ptls)
                 int64_t work = jl_safepoint_master_count_work(ptls);
                 // If there is enough work, recruit workers and also become a worker,
                 // relinquishing the safepoint master status
-                if (work > 0) {
+                if (work > 1) {
                     jl_safepoint_master_recruit_workers(ptls, work - 1);
                     jl_mutex_unlock_nogc(&safepoint_master_lock);
                     gc_mark_loop(ptls);
@@ -255,25 +255,26 @@ void jl_safepoint_wait_pmark(void)
 
 void jl_safepoint_wait_sweeping(void)
 {
-    while (jl_atomic_load_relaxed(&jl_gc_running) ||
-           jl_atomic_load_acquire(&jl_gc_running)) {
-	// Clean-up buffers from `reclaim_set`
-	jl_ptls_t ptls = jl_current_task->ptls;
-	jl_gc_markqueue_t *mq = &ptls->mark_queue;
-	arraylist_t *rs = mq->reclaim_set;
-	ws_array_t *a;
-	while ((a = (ws_array_t *)arraylist_pop(rs))) {
-	    free(a->buffer);
-	    free(a);
-	}
-	jl_cpu_pause();
+    // Clean-up buffers from `reclaim_set`
+    jl_ptls_t ptls = jl_current_task->ptls;
+    jl_gc_markqueue_t *mq = &ptls->mark_queue;
+    arraylist_t *rs = mq->reclaim_set;
+    ws_array_t *a;
+    while ((a = (ws_array_t *)arraylist_pop(rs))) {
+        free(a->buffer);
+        free(a);
     }
+    jl_cpu_pause();
 }
 
 void jl_safepoint_wait_gc(void)
 {
-    jl_safepoint_wait_pmark();
-    jl_safepoint_wait_sweeping();
+
+    while (jl_atomic_load_relaxed(&jl_gc_running) ||
+           jl_atomic_load_acquire(&jl_gc_running)) {
+    	jl_safepoint_wait_pmark();
+    	jl_safepoint_wait_sweeping();
+    }
 }
 
 void jl_safepoint_enable_sigint(void)
