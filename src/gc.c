@@ -1772,7 +1772,6 @@ STATIC_INLINE void gc_mark_obj8(jl_ptls_t ptls, char *obj8_parent, uint8_t *obj8
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     for (; obj8_begin < obj8_end; obj8_begin++) {
-        jl_prefetch(obj8_parent + *obj8_begin + 4);
 	new_obj = ((jl_value_t **)obj8_parent)[*obj8_begin];
         if (new_obj)
             verify_parent2("object", obj8_parent, &new_obj, "field(%d)",
@@ -1790,7 +1789,6 @@ STATIC_INLINE void gc_mark_obj16(jl_ptls_t ptls, char *obj16_parent, uint16_t *o
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     for (; obj16_begin < obj16_end; obj16_begin++) {
-        jl_prefetch(obj16_parent + *obj16_begin + 4);
 	    new_obj = ((jl_value_t **)obj16_parent)[*obj16_begin];
         if (new_obj)
             verify_parent2("object", obj16_parent, &new_obj, "field(%d)",
@@ -1808,7 +1806,6 @@ STATIC_INLINE void gc_mark_obj32(jl_ptls_t ptls, char *obj32_parent, uint32_t *o
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     for (; obj32_begin < obj32_end; obj32_begin++) {
-        jl_prefetch(obj32_parent + *obj32_begin + 4);
 	    new_obj = ((jl_value_t **)obj32_parent)[*obj32_begin];
         if (new_obj)
             verify_parent2("object", obj32_parent, &new_obj, "field(%d)",
