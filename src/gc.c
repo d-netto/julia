@@ -2037,7 +2037,7 @@ STATIC_INLINE void gc_set_recruit(jl_ptls_t ptls, void *addr)
     }
 }
 
-#define OPT_SINGLE_OUTREF
+// #define OPT_SINGLE_OUTREF
 
 #define gc_mark_single_outref(new_obj, obj_parent, obj_begin, nptr) \
     do {                                                            \
@@ -2055,7 +2055,7 @@ STATIC_INLINE void gc_set_recruit(jl_ptls_t ptls, void *addr)
 // TODO: write docstring
 NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_updated)
 {
-mark_obj : {
+    mark_obj : {
         jl_gc_markqueue_t *mq = &ptls->mark_queue;
     #ifdef JL_DEBUG_BUILD
         if (new_obj == gc_findval)
