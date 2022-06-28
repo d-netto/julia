@@ -10,11 +10,9 @@
 extern "C" {
 #endif
 
-// ====================
-//
-// GC Callbacks
-//
-// ====================
+/*
+ GC Callbacks
+*/
 
 jl_gc_callback_list_t *gc_cblist_root_scanner;
 jl_gc_callback_list_t *gc_cblist_task_scanner;
@@ -25,7 +23,7 @@ jl_gc_callback_list_t *gc_cblist_notify_external_free;
 
 void jl_gc_register_callback(jl_gc_callback_list_t **list, jl_gc_cb_func_t func)
 {
-    while (*list != NULL) {
+    while (*list) {
         if ((*list)->func == func)
             return;
         list = &((*list)->next);
@@ -37,7 +35,7 @@ void jl_gc_register_callback(jl_gc_callback_list_t **list, jl_gc_cb_func_t func)
 
 void jl_gc_deregister_callback(jl_gc_callback_list_t **list, jl_gc_cb_func_t func)
 {
-    while (*list != NULL) {
+    while (*list) {
         if ((*list)->func == func) {
             jl_gc_callback_list_t *tmp = *list;
             (*list) = (*list)->next;

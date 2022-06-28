@@ -9,11 +9,9 @@
 extern "C" {
 #endif
 
-// ====================
-//
-// Marking phase
-//
-// ====================
+/*
+ Marking phase
+*/
 
 extern int mark_reset_age;
 extern void *sysimg_base;
