@@ -930,6 +930,14 @@ void gc_mark_roots(jl_gc_markqueue_t *mq)
     gc_try_claim_and_push(mq, cmpswap_names, NULL);
 }
 
+void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_markqueue_t *mq)
+{
+    for (size_t i = 0; i < jl_n_threads; i++) {
+        gc_queue_thread_local(mq, jl_all_tls_states[i]);
+    }
+    gc_mark_roots(mq);
+}
+
 #ifdef __cplusplus
 }
 #endif

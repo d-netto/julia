@@ -1379,20 +1379,6 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
     errno = last_errno;
 }
 
-void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_markqueue_t *mq)
-{
-    for (size_t i = 0; i < jl_n_threads; i++)
-        gc_queue_thread_local(mq, jl_all_tls_states[i]);
-    gc_mark_roots(mq);
-}
-
-// allocator entry points
-
-JL_DLLEXPORT jl_value_t *(jl_gc_alloc)(jl_ptls_t ptls, size_t sz, void *ty)
-{
-    return jl_gc_alloc_(ptls, sz, ty);
-}
-
 // Per-thread initialization
 void jl_init_thread_heap(jl_ptls_t ptls)
 {
@@ -1487,51 +1473,10 @@ JL_DLLEXPORT void jl_throw_out_of_memory_error(void)
     jl_throw(jl_memory_exception);
 }
 
-JL_DLLEXPORT void jl_gc_add_finalizer(jl_value_t *v, jl_function_t *f)
-{
-    jl_ptls_t ptls = jl_current_task->ptls;
-    jl_gc_add_finalizer_th(ptls, v, f);
-}
-
-JL_DLLEXPORT void jl_finalize(jl_value_t *o)
-{
-    jl_finalize_th(jl_current_task, o);
-}
-
 JL_DLLEXPORT jl_weakref_t *jl_gc_new_weakref(jl_value_t *value)
 {
     jl_ptls_t ptls = jl_current_task->ptls;
     return jl_gc_new_weakref_th(ptls, value);
-}
-
-JL_DLLEXPORT jl_value_t *jl_gc_allocobj(size_t sz)
-{
-    jl_ptls_t ptls = jl_current_task->ptls;
-    return jl_gc_alloc(ptls, sz, NULL);
-}
-
-JL_DLLEXPORT jl_value_t *jl_gc_alloc_0w(void)
-{
-    jl_ptls_t ptls = jl_current_task->ptls;
-    return jl_gc_alloc(ptls, 0, NULL);
-}
-
-JL_DLLEXPORT jl_value_t *jl_gc_alloc_1w(void)
-{
-    jl_ptls_t ptls = jl_current_task->ptls;
-    return jl_gc_alloc(ptls, sizeof(void*), NULL);
-}
-
-JL_DLLEXPORT jl_value_t *jl_gc_alloc_2w(void)
-{
-    jl_ptls_t ptls = jl_current_task->ptls;
-    return jl_gc_alloc(ptls, sizeof(void*) * 2, NULL);
-}
-
-JL_DLLEXPORT jl_value_t *jl_gc_alloc_3w(void)
-{
-    jl_ptls_t ptls = jl_current_task->ptls;
-    return jl_gc_alloc(ptls, sizeof(void*) * 3, NULL);
 }
 
 JL_DLLEXPORT int jl_gc_enable_conservative_gc_support(void)

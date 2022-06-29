@@ -319,6 +319,17 @@ JL_DLLEXPORT void jl_finalize_th(jl_task_t *ct, jl_value_t *o)
     arraylist_free(&copied_list);
 }
 
+JL_DLLEXPORT void jl_gc_add_finalizer(jl_value_t *v, jl_function_t *f)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    jl_gc_add_finalizer_th(ptls, v, f);
+}
+
+JL_DLLEXPORT void jl_finalize(jl_value_t *o)
+{
+    jl_finalize_th(jl_current_task, o);
+}
+
 #ifdef __cplusplus
 }
 #endif

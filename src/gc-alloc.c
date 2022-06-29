@@ -374,6 +374,42 @@ void *jl_gc_perm_alloc(size_t sz, int zero, unsigned align, unsigned offset)
     return p;
 }
 
+JL_DLLEXPORT jl_value_t *jl_gc_allocobj(size_t sz)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    return jl_gc_alloc(ptls, sz, NULL);
+}
+
+JL_DLLEXPORT jl_value_t *jl_gc_alloc_0w(void)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    return jl_gc_alloc(ptls, 0, NULL);
+}
+
+JL_DLLEXPORT jl_value_t *jl_gc_alloc_1w(void)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    return jl_gc_alloc(ptls, sizeof(void *), NULL);
+}
+
+JL_DLLEXPORT jl_value_t *jl_gc_alloc_2w(void)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    return jl_gc_alloc(ptls, sizeof(void *) * 2, NULL);
+}
+
+JL_DLLEXPORT jl_value_t *jl_gc_alloc_3w(void)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    return jl_gc_alloc(ptls, sizeof(void *) * 3, NULL);
+}
+
+JL_DLLEXPORT jl_value_t *(jl_gc_alloc)(jl_ptls_t ptls, size_t sz, void *ty)
+{
+    return jl_gc_alloc_(ptls, sz, ty);
+}
+
+
 #ifdef __cplusplus
 }
 #endif

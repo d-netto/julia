@@ -131,6 +131,12 @@ void *gc_perm_alloc_large(size_t sz, int zero, unsigned align,
 void *jl_gc_perm_alloc_nolock(size_t sz, int zero, unsigned align, unsigned offset);
 void *jl_gc_perm_alloc(size_t sz, int zero, unsigned align, unsigned offset);
 
+JL_DLLEXPORT jl_value_t *jl_gc_allocobj(size_t sz);
+JL_DLLEXPORT jl_value_t *jl_gc_alloc_0w(void);
+JL_DLLEXPORT jl_value_t *jl_gc_alloc_1w(void);
+JL_DLLEXPORT jl_value_t *jl_gc_alloc_2w(void);
+JL_DLLEXPORT jl_value_t *jl_gc_alloc_3w(void);
+JL_DLLEXPORT jl_value_t *(jl_gc_alloc)(jl_ptls_t ptls, size_t sz, void *ty);
 #ifdef __cplusplus
 }
 #endif

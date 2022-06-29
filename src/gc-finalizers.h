@@ -32,6 +32,9 @@ void schedule_all_finalizers(arraylist_t *flist) JL_NOTSAFEPOINT;
 void jl_gc_run_all_finalizers(jl_task_t *ct);
 void jl_gc_add_finalizer_(jl_ptls_t ptls, void *v, void *f) JL_NOTSAFEPOINT;
 
+JL_DLLEXPORT void jl_gc_add_finalizer(jl_value_t *v, jl_function_t *f);
+JL_DLLEXPORT void jl_finalize(jl_value_t *o);
+
 #ifdef __cplusplus
 }
 #endif
