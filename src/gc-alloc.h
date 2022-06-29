@@ -46,7 +46,7 @@ STATIC_INLINE void *jl_realloc_aligned(void *d, size_t sz, size_t oldsz, size_t 
         return realloc(d, sz);
 #endif
     void *b = jl_malloc_aligned(sz, align);
-    if (b != NULL) {
+    if (b) {
         memcpy(b, d, oldsz > sz ? sz : oldsz);
         free(d);
     }
@@ -99,6 +99,13 @@ jl_value_t *jl_gc_realloc_string(jl_value_t *s, size_t sz);
 JL_DLLEXPORT void *jl_gc_alloc_typed(jl_ptls_t ptls, size_t sz, void *ty);
 JL_DLLEXPORT void *jl_gc_managed_realloc(void *d, size_t sz, size_t oldsz, int isaligned,
                                          jl_value_t *owner);
+
+// Big value list
+
+// Size includes the tag and the tag is not cleared!!
+STATIC_INLINE jl_value_t *jl_gc_big_alloc_inner(jl_ptls_t ptls, size_t sz);
+JL_DLLEXPORT jl_value_t *jl_gc_big_alloc(jl_ptls_t ptls, size_t sz);
+jl_value_t *jl_gc_big_alloc_noinline(jl_ptls_t ptls, size_t sz);
 
 // Perm gen allocator
 // 2M pool

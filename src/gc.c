@@ -315,54 +315,6 @@ static void sweep_weak_refs(void)
     }
 }
 
-
-// big value list
-
-// Size includes the tag and the tag is not cleared!!
-static inline jl_value_t *jl_gc_big_alloc_inner(jl_ptls_t ptls, size_t sz)
-{
-    maybe_collect(ptls);
-    size_t offs = offsetof(bigval_t, header);
-    assert(sz >= sizeof(jl_taggedvalue_t) && "sz must include tag");
-    static_assert(offsetof(bigval_t, header) >= sizeof(void*), "Empty bigval header?");
-    static_assert(sizeof(bigval_t) % JL_HEAP_ALIGNMENT == 0, "");
-    size_t allocsz = LLT_ALIGN(sz + offs, JL_CACHE_BYTE_ALIGNMENT);
-    if (allocsz < sz)  // overflow in adding offs, size was "negative"
-        jl_throw(jl_memory_exception);
-    bigval_t *v = (bigval_t*)malloc_cache_align(allocsz);
-    if (v == NULL)
-        jl_throw(jl_memory_exception);
-    gc_invoke_callbacks(jl_gc_cb_notify_external_alloc_t,
-        gc_cblist_notify_external_alloc, (v, allocsz));
-    jl_atomic_store_relaxed(&ptls->gc_num.allocd,
-        jl_atomic_load_relaxed(&ptls->gc_num.allocd) + allocsz);
-    jl_atomic_store_relaxed(&ptls->gc_num.bigalloc,
-        jl_atomic_load_relaxed(&ptls->gc_num.bigalloc) + 1);
-#ifdef MEMDEBUG
-    memset(v, 0xee, allocsz);
-#endif
-    v->sz = allocsz;
-    v->age = 0;
-    gc_big_object_link(v, &ptls->heap.big_objects);
-    return jl_valueof(&v->header);
-}
-
-// Instrumented version of jl_gc_big_alloc_inner, called into by LLVM-generated code.
-JL_DLLEXPORT jl_value_t *jl_gc_big_alloc(jl_ptls_t ptls, size_t sz)
-{
-    jl_value_t *val = jl_gc_big_alloc_inner(ptls, sz);
-
-    maybe_record_alloc_to_profile(val, sz, jl_gc_unknown_type_tag);
-    return val;
-}
-
-// This wrapper exists only to prevent `jl_gc_big_alloc_inner` from being inlined into
-// its callers. We provide an external-facing interface for callers, and inline `jl_gc_big_alloc_inner`
-// into this. (See https://github.com/JuliaLang/julia/pull/43868 for more details.)
-jl_value_t *jl_gc_big_alloc_noinline(jl_ptls_t ptls, size_t sz) {
-    return jl_gc_big_alloc_inner(ptls, sz);
-}
-
 // Sweep list rooted at *pv, removing and freeing any unmarked objects.
 // Return pointer to last `next` field in the culled list.
 static bigval_t **sweep_big_list(int sweep_full, bigval_t **pv) JL_NOTSAFEPOINT
