@@ -101,8 +101,6 @@ JL_DLLEXPORT void *jl_gc_managed_realloc(void *d, size_t sz, size_t oldsz, int i
                                          jl_value_t *owner);
 
 // Big value list
-
-// Size includes the tag and the tag is not cleared!!
 STATIC_INLINE jl_value_t *jl_gc_big_alloc_inner(jl_ptls_t ptls, size_t sz);
 JL_DLLEXPORT jl_value_t *jl_gc_big_alloc(jl_ptls_t ptls, size_t sz);
 jl_value_t *jl_gc_big_alloc_noinline(jl_ptls_t ptls, size_t sz);
@@ -137,6 +135,7 @@ JL_DLLEXPORT jl_value_t *jl_gc_alloc_1w(void);
 JL_DLLEXPORT jl_value_t *jl_gc_alloc_2w(void);
 JL_DLLEXPORT jl_value_t *jl_gc_alloc_3w(void);
 JL_DLLEXPORT jl_value_t *(jl_gc_alloc)(jl_ptls_t ptls, size_t sz, void *ty);
+
 #ifdef __cplusplus
 }
 #endif

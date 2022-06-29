@@ -1057,47 +1057,49 @@ size_t jl_maxrss(void);
 // Only one thread should be running in this function
 static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 {
-    combine_thread_gc_counts(&gc_num);
-
-    jl_gc_markqueue_t *mq = &ptls->mark_queue;
+   combine_thread_gc_counts(&gc_num);
 
     uint64_t gc_start_time = jl_hrtime();
-    int64_t last_perm_scanned_bytes = perm_scanned_bytes;
-    JL_PROBE_GC_MARK_BEGIN();
     uint64_t start_mark_time = jl_hrtime();
+    int64_t last_perm_scanned_bytes = perm_scanned_bytes;
 
-    // 1. fix GC bits of objects in the remset.
-    for (int t_i = 0; t_i < jl_n_threads; t_i++)
-        gc_premark(jl_all_tls_states[t_i]);
-    
-    for (int t_i = 0; t_i < jl_n_threads; t_i++) {
-        jl_ptls_t ptls2 = jl_all_tls_states[t_i];
-        // 2.1. mark every thread local root
-        gc_queue_thread_local(mq, ptls2);
-        // 2.2 mark any managed objects in the backtrace buffer
-        gc_queue_bt_buf(mq, ptls2);
-        // 2.3. mark every object in the `last_remsets` and `rem_binding`
-        gc_queue_remset(ptls, ptls2);
+    // Main mark-loop
+    JL_PROBE_GC_MARK_BEGIN();
+    {
+        jl_gc_markqueue_t *mq = &ptls->mark_queue;
+        // Fix GC bits of objects in the remset.
+        for (int t_i = 0; t_i < jl_n_threads; t_i++) {
+            gc_premark(jl_all_tls_states[t_i]);
+        }
+        for (int t_i = 0; t_i < jl_n_threads; t_i++) {
+            jl_ptls_t ptls2 = jl_all_tls_states[t_i];
+            // Mark every thread local root
+            gc_queue_thread_local(mq, ptls2);
+            // Mark any managed objects in the backtrace buffer
+            gc_queue_bt_buf(mq, ptls2);
+            // Mark every object in the `last_remsets` and `rem_binding`
+            gc_queue_remset(ptls, ptls2);
+        }
+        // Walk roots
+        gc_mark_roots(mq);
+        if (gc_cblist_root_scanner) {
+            gc_invoke_callbacks(jl_gc_cb_root_scanner_t, gc_cblist_root_scanner, (collection));
+        }
+        gc_mark_loop(ptls);
+        gc_num.since_sweep += gc_num.allocd;
     }
-
-    // 3. walk roots
-    gc_mark_roots(mq);
-    if (gc_cblist_root_scanner) {
-        gc_invoke_callbacks(jl_gc_cb_root_scanner_t,
-            gc_cblist_root_scanner, (collection));
-    }
-    gc_mark_loop(ptls);
-    gc_num.since_sweep += gc_num.allocd;
     JL_PROBE_GC_MARK_END(scanned_bytes, perm_scanned_bytes);
+
     gc_settime_premark_end();
     gc_time_mark_pause(gc_start_time, scanned_bytes, perm_scanned_bytes);
+
     uint64_t end_mark_time = jl_hrtime();
     uint64_t mark_time = end_mark_time - start_mark_time;
     gc_num.mark_time = mark_time;
     gc_num.total_mark_time += mark_time;
-    int64_t actual_allocd = gc_num.since_sweep;
-    // marking is over
+    // Main mark-loop is over
 
+    int64_t actual_allocd = gc_num.since_sweep;
     // 4. check for objects to finalize
     clear_weak_refs();
     // Record the length of the marked list since we need to
