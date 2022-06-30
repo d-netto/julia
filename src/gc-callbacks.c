@@ -10,10 +10,6 @@
 extern "C" {
 #endif
 
-/*
- GC Callbacks
-*/
-
 jl_gc_callback_list_t *gc_cblist_root_scanner;
 jl_gc_callback_list_t *gc_cblist_task_scanner;
 jl_gc_callback_list_t *gc_cblist_pre_gc;

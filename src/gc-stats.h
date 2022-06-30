@@ -4,6 +4,8 @@
 #define JL_GC_STATS_H
 
 // Full collection heuristics
+extern int64_t scanned_bytes; // young bytes scanned while marking
+extern int64_t perm_scanned_bytes; // old bytes scanned while marking
 extern int64_t live_bytes;
 extern int64_t promoted_bytes;
 extern int64_t last_live_bytes; // live_bytes at last collection

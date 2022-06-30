@@ -14,7 +14,6 @@ extern "C" {
 */
 
 jl_mutex_t finalizers_lock;
-uv_mutex_t gc_cache_lock;
 
 void schedule_finalization(void *o, void *f) JL_NOTSAFEPOINT
 {

@@ -9,6 +9,12 @@
 extern "C" {
 #endif
 
+// Protect all access to `finalizer_list_marked` and `to_finalize`.
+// For accessing `ptls->finalizers`, the lock is needed if a thread
+// is going to realloc the buffer (of its own list) or accessing the
+// list of another thread
+extern jl_mutex_t finalizers_lock;
+
 void schedule_finalization(void *o, void *f) JL_NOTSAFEPOINT;
 void run_finalizer(jl_task_t *ct, jl_value_t *o, jl_value_t *ff);
 void finalize_object(arraylist_t *list, jl_value_t *o, arraylist_t *copied_list,

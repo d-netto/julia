@@ -9,6 +9,9 @@
 extern "C" {
 #endif
 
+// GC knobs and self-measurement variables
+extern int64_t last_gc_total_bytes;
+
 // max_total_memory is a suggestion.  We try very hard to stay
 // under this limit, but we will go above it rather than halting.
 #ifdef _P64
@@ -18,18 +21,27 @@ typedef uint64_t memsize_t;
 typedef uint32_t memsize_t;
 #define default_collect_interval (3200 * 1024 * sizeof(void *))
 #endif
-
 extern size_t max_collect_interval;
 extern memsize_t max_total_memory;
+
+// Full collection heuristics
+extern int64_t live_bytes;
+extern int64_t promoted_bytes;
+extern int64_t last_live_bytes; // live_bytes at last collection
+extern int64_t t_start; // Time GC starts;
+extern int64_t lazy_freed_pages;
+#ifdef __GLIBC__
+// maxrss at last malloc_trim
+extern int64_t last_trim_maxrss;
+#endif
+
+extern int prev_sweep_full;
 
 void gc_sweep_weak_refs(void);
 bigval_t **gc_sweep_big_list(int sweep_full, bigval_t **pv) JL_NOTSAFEPOINT;
 void gc_sweep_big(jl_ptls_t ptls, int sweep_full) JL_NOTSAFEPOINT;
 void gc_free_array(jl_array_t *a) JL_NOTSAFEPOINT;
 void gc_sweep_malloced_arrays(void) JL_NOTSAFEPOINT;
-
-extern int64_t lazy_freed_pages;
-extern int prev_sweep_full;
 
 extern jl_taggedvalue_t *reset_page(const jl_gc_pool_t *p, jl_gc_pagemeta_t *pg,
                                     jl_taggedvalue_t *fl) JL_NOTSAFEPOINT;
@@ -246,6 +258,7 @@ STATIC_INLINE void gc_pool_sync_nfree(jl_gc_pagemeta_t *pg,
 
 
 void gc_sweep_pool(int sweep_full);
+void sweep_finalizer_list(arraylist_t *list);
 
 void gc_sweep_foreign_objs_in_list(arraylist_t *objs);
 void gc_sweep_foreign_objs(void);

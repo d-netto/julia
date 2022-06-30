@@ -1,6 +1,10 @@
 // This file is a part of Julia. License is MIT: https://julialang.org/license
 
+#include "gc-mark.h"
+#include "gc-alloc.h"
 #include "gc-callbacks.h"
+#include "gc-finalizers.h"
+#include "gc-sweep.h"
 #include "gc.h"
 #include "julia_assert.h"
 #include "julia_gcext.h"
@@ -9,21 +13,10 @@
 extern "C" {
 #endif
 
-/*
- Marking phase
-*/
-
 extern int mark_reset_age;
-extern void *sysimg_base;
-extern void *sysimg_end;
 extern void gc_sync_cache(jl_ptls_t ptls) JL_NOTSAFEPOINT;
 
-extern jl_gc_callback_list_t *gc_cblist_root_scanner;
-extern jl_gc_callback_list_t *gc_cblist_task_scanner;
-extern jl_gc_callback_list_t *gc_cblist_pre_gc;
-extern jl_gc_callback_list_t *gc_cblist_post_gc;
-extern jl_gc_callback_list_t *gc_cblist_notify_external_alloc;
-extern jl_gc_callback_list_t *gc_cblist_notify_external_free;
+uv_mutex_t gc_cache_lock;
 
 #ifdef JL_DEBUG_BUILD
 static void *volatile gc_findval; // for usage from gdb, for finding the gc-root for a value

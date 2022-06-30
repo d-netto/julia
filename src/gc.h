@@ -312,8 +312,6 @@ STATIC_INLINE void *gc_ptr_clear_tag(void *v, uintptr_t mask) JL_NOTSAFEPOINT
     return (void*)(((uintptr_t)v) & ~mask);
 }
 
-NOINLINE uintptr_t gc_get_stack_ptr(void);
-
 STATIC_INLINE jl_gc_pagemeta_t *page_metadata(void *_data) JL_NOTSAFEPOINT
 {
     uintptr_t data = ((uintptr_t)_data);

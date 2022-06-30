@@ -2,6 +2,7 @@
 
 #include "gc-alloc.h"
 #include "gc-callbacks.h"
+#include "gc-sweep.h"
 #include "gc.h"
 #include "julia_assert.h"
 #include "julia_gcext.h"
@@ -10,14 +11,8 @@
 extern "C" {
 #endif
 
-extern jl_gc_callback_list_t *gc_cblist_root_scanner;
-extern jl_gc_callback_list_t *gc_cblist_task_scanner;
-extern jl_gc_callback_list_t *gc_cblist_pre_gc;
-extern jl_gc_callback_list_t *gc_cblist_post_gc;
-extern jl_gc_callback_list_t *gc_cblist_notify_external_alloc;
-extern jl_gc_callback_list_t *gc_cblist_notify_external_free;
-
-extern int64_t live_bytes;
+void *sysimg_base = NULL;
+void *sysimg_end = NULL;
 
 uv_mutex_t gc_perm_lock;
 uintptr_t gc_perm_pool = 0;
@@ -303,6 +298,12 @@ jl_value_t *jl_gc_big_alloc_noinline(jl_ptls_t ptls, size_t sz)
     return jl_gc_big_alloc_inner(ptls, sz);
 }
 
+void jl_gc_set_permalloc_region(void *start, void *end)
+{
+    sysimg_base = start;
+    sysimg_end = end;
+}
+
 void *gc_perm_alloc_large(size_t sz, int zero, unsigned align,
                           unsigned offset) JL_NOTSAFEPOINT
 {
@@ -407,6 +408,82 @@ JL_DLLEXPORT jl_value_t *jl_gc_alloc_3w(void)
 JL_DLLEXPORT jl_value_t *(jl_gc_alloc)(jl_ptls_t ptls, size_t sz, void *ty)
 {
     return jl_gc_alloc_(ptls, sz, ty);
+}
+
+// pool allocation
+jl_taggedvalue_t *reset_page(const jl_gc_pool_t *p, jl_gc_pagemeta_t *pg,
+                             jl_taggedvalue_t *fl) JL_NOTSAFEPOINT
+{
+    assert(GC_PAGE_OFFSET >= sizeof(void *));
+    pg->nfree = (GC_PAGE_SZ - GC_PAGE_OFFSET) / p->osize;
+    jl_ptls_t ptls2 = jl_all_tls_states[pg->thread_n];
+    pg->pool_n = p - ptls2->heap.norm_pools;
+    memset(pg->ages, 0, GC_PAGE_SZ / 8 / p->osize + 1);
+    jl_taggedvalue_t *beg = (jl_taggedvalue_t *)(pg->data + GC_PAGE_OFFSET);
+    jl_taggedvalue_t *next = (jl_taggedvalue_t *)pg->data;
+    if (fl == NULL) {
+        next->next = NULL;
+    }
+    else {
+        // Insert free page after first page.
+        // This prevents unnecessary fragmentation from multiple pages
+        // being allocated from at the same time. Instead, objects will
+        // only ever be allocated from the first object in the list.
+        // This is specifically being relied on by the implementation
+        // of jl_gc_internal_obj_base_ptr() so that the function does
+        // not have to traverse the entire list.
+        jl_taggedvalue_t *flpage = (jl_taggedvalue_t *)gc_page_data(fl);
+        next->next = flpage->next;
+        flpage->next = beg;
+        beg = fl;
+    }
+    pg->has_young = 0;
+    pg->has_marked = 0;
+    pg->fl_begin_offset = -1;
+    pg->fl_end_offset = -1;
+    return beg;
+}
+
+// Add a new page to the pool. Discards any pages in `p->newpages` before.
+NOINLINE jl_taggedvalue_t *add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
+{
+    // Do not pass in `ptls` as argument. This slows down the fast path
+    // in pool_alloc significantly
+    jl_ptls_t ptls = jl_current_task->ptls;
+    jl_gc_pagemeta_t *pg = jl_gc_alloc_page();
+    pg->osize = p->osize;
+    pg->ages = (uint8_t *)malloc_s(GC_PAGE_SZ / 8 / p->osize + 1);
+    pg->thread_n = ptls->tid;
+    jl_taggedvalue_t *fl = reset_page(p, pg, NULL);
+    p->newpages = fl;
+    return fl;
+}
+
+// Instrumented version of jl_gc_pool_alloc_inner, called into by LLVM-generated code.
+JL_DLLEXPORT jl_value_t *jl_gc_pool_alloc(jl_ptls_t ptls, int pool_offset, int osize)
+{
+    jl_value_t *val = jl_gc_pool_alloc_inner(ptls, pool_offset, osize);
+    maybe_record_alloc_to_profile(val, osize, jl_gc_unknown_type_tag);
+    return val;
+}
+
+// This wrapper exists only to prevent `jl_gc_pool_alloc_inner` from being inlined into
+// its callers. We provide an external-facing interface for callers, and inline
+// `jl_gc_pool_alloc_inner` into this. (See https://github.com/JuliaLang/julia/pull/43868
+// for more details.)
+jl_value_t *jl_gc_pool_alloc_noinline(jl_ptls_t ptls, int pool_offset, int osize)
+{
+    return jl_gc_pool_alloc_inner(ptls, pool_offset, osize);
+}
+
+int jl_gc_classify_pools(size_t sz, int *osize)
+{
+    if (sz > GC_MAX_SZCLASS)
+        return -1;
+    size_t allocsz = sz + sizeof(jl_taggedvalue_t);
+    int klass = jl_gc_szclass(allocsz);
+    *osize = jl_gc_sizeclasses[klass];
+    return (int)(intptr_t)(&((jl_ptls_t)0)->heap.norm_pools[klass]);
 }
 
 

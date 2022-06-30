@@ -24,6 +24,13 @@ typedef struct jl_gc_callback_list_t {
     jl_gc_cb_func_t func;
 } jl_gc_callback_list_t;
 
+extern jl_gc_callback_list_t *gc_cblist_root_scanner;
+extern jl_gc_callback_list_t *gc_cblist_task_scanner;
+extern jl_gc_callback_list_t *gc_cblist_pre_gc;
+extern jl_gc_callback_list_t *gc_cblist_post_gc;
+extern jl_gc_callback_list_t *gc_cblist_notify_external_alloc;
+extern jl_gc_callback_list_t *gc_cblist_notify_external_free;
+
 void jl_gc_register_callback(jl_gc_callback_list_t **list, jl_gc_cb_func_t func);
 void jl_gc_deregister_callback(jl_gc_callback_list_t **list, jl_gc_cb_func_t func);
 

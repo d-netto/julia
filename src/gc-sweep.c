@@ -3,6 +3,7 @@
 #include "gc-sweep.h"
 #include "gc-alloc.h"
 #include "gc-callbacks.h"
+#include "gc-finalizers.h"
 #include "gc-sweep.h"
 #include "gc.h"
 #include "julia_assert.h"
@@ -14,15 +15,6 @@ extern "C" {
 
 #define PROMOTE_AGE 1
 #define inc_sat(v, s) v = (v) >= s ? s : (v) + 1
-
-extern jl_gc_callback_list_t *gc_cblist_root_scanner;
-extern jl_gc_callback_list_t *gc_cblist_task_scanner;
-extern jl_gc_callback_list_t *gc_cblist_pre_gc;
-extern jl_gc_callback_list_t *gc_cblist_post_gc;
-extern jl_gc_callback_list_t *gc_cblist_notify_external_alloc;
-extern jl_gc_callback_list_t *gc_cblist_notify_external_free;
-
-int prev_sweep_full = 1;
 
 // GC knobs and self-measurement variables
 int64_t last_gc_total_bytes = 0;
@@ -37,6 +29,19 @@ size_t max_collect_interval = 500000000UL;
 // on 32 bit architectures.
 memsize_t max_total_memory = (memsize_t)2 * 1024 * 1024 * 1024;
 #endif
+
+// Full collection heuristics
+int64_t live_bytes = 0;
+int64_t promoted_bytes = 0;
+int64_t last_live_bytes = 0; // live_bytes at last collection
+int64_t t_start = 0; // Time GC starts;
+int64_t lazy_freed_pages = 0;
+#ifdef __GLIBC__
+// maxrss at last malloc_trim
+int64_t last_trim_maxrss = 0;
+#endif
+
+int prev_sweep_full = 1;
 
 void gc_sweep_weak_refs(void)
 {
@@ -166,8 +171,6 @@ void gc_sweep_malloced_arrays(void) JL_NOTSAFEPOINT
     gc_time_mallocd_array_end();
 }
 
-// sweep phase
-
 // sweep over all memory for all pagetable1 that may contain allocated pages
 void sweep_pool_pagetable(jl_taggedvalue_t ***pfl, int sweep_full) JL_NOTSAFEPOINT
 {
@@ -250,6 +253,49 @@ void gc_sweep_pool(int sweep_full)
     }
 
     gc_time_pool_end(sweep_full);
+}
+
+// find unmarked objects that need to be finalized from the finalizer list "list".
+// this must happen last in the mark phase.
+void sweep_finalizer_list(arraylist_t *list)
+{
+    void **items = list->items;
+    size_t len = list->len;
+    size_t j = 0;
+    for (size_t i = 0; i < len; i += 2) {
+        void *v0 = items[i];
+        void *v = gc_ptr_clear_tag(v0, 1);
+        if (__unlikely(!v0)) {
+            // remove from this list
+            continue;
+        }
+
+        void *fin = items[i + 1];
+        int isfreed = !gc_marked(jl_astaggedvalue(v)->bits.gc);
+        int isold = (list != &finalizer_list_marked &&
+                     jl_astaggedvalue(v)->bits.gc == GC_OLD_MARKED &&
+                     jl_astaggedvalue(fin)->bits.gc == GC_OLD_MARKED);
+        if (isfreed || isold) {
+            // remove from this list
+        }
+        else {
+            if (j < i) {
+                items[j] = items[i];
+                items[j + 1] = items[i + 1];
+            }
+            j += 2;
+        }
+        if (isfreed) {
+            schedule_finalization(v0, fin);
+        }
+        if (isold) {
+            // The caller relies on the new objects to be pushed to the end of
+            // the list!!
+            arraylist_push(&finalizer_list_marked, v0);
+            arraylist_push(&finalizer_list_marked, fin);
+        }
+    }
+    list->len = j;
 }
 
 // explicitly scheduled objects for the sweepfunc callback

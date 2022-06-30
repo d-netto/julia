@@ -17,18 +17,6 @@
 extern "C" {
 #endif
 
-extern jl_gc_callback_list_t *gc_cblist_root_scanner;
-extern jl_gc_callback_list_t *gc_cblist_task_scanner;
-extern jl_gc_callback_list_t *gc_cblist_pre_gc;
-extern jl_gc_callback_list_t *gc_cblist_post_gc;
-extern jl_gc_callback_list_t *gc_cblist_notify_external_alloc;
-extern jl_gc_callback_list_t *gc_cblist_notify_external_free;
-
-// Protect all access to `finalizer_list_marked` and `to_finalize`.
-// For accessing `ptls->finalizers`, the lock is needed if a thread
-// is going to realloc the buffer (of its own list) or accessing the
-// list of another thread
-extern jl_mutex_t finalizers_lock;
 extern uv_mutex_t gc_cache_lock;
 
 // Flag that tells us whether we need to support conservative marking
@@ -83,11 +71,6 @@ bigval_t *big_objects_marked = NULL;
 arraylist_t finalizer_list_marked;
 arraylist_t to_finalize;
 JL_DLLEXPORT _Atomic(int) jl_gc_have_pending_finalizers = 0;
-
-NOINLINE uintptr_t gc_get_stack_ptr(void)
-{
-    return (uintptr_t)jl_get_frame_addr();
-}
 
 #define should_timeout() 0
 
@@ -159,28 +142,8 @@ int mark_reset_age = 0;
 // When a write barrier triggers, the offending marked object is both queued,
 // so as not to trigger the barrier again, and put in the remset.
 
-
-#define PROMOTE_AGE 1
-// this cannot be increased as is without changing :
-// - sweep_page which is specialized for 1bit age
-// - the size of the age storage in jl_gc_pagemeta_t
-
-
 int64_t scanned_bytes; // young bytes scanned while marking
 int64_t perm_scanned_bytes; // old bytes scanned while marking
-extern int prev_sweep_full;
-
-#define inc_sat(v, s) v = (v) >= s ? s : (v) + 1
-
-// Full collection heuristics
-int64_t live_bytes = 0;
-int64_t promoted_bytes = 0;
-int64_t last_live_bytes = 0; // live_bytes at last collection
-int64_t t_start = 0; // Time GC starts;
-#ifdef __GLIBC__
-// maxrss at last malloc_trim
-static int64_t last_trim_maxrss = 0;
-#endif
 
 STATIC_INLINE void gc_sync_cache_nolock(jl_ptls_t ptls,
                                         jl_gc_mark_cache_t *gc_cache) JL_NOTSAFEPOINT
@@ -205,19 +168,19 @@ STATIC_INLINE void gc_sync_cache_nolock(jl_ptls_t ptls,
     gc_cache->scanned_bytes = 0;
 }
 
-void gc_sync_cache(jl_ptls_t ptls) JL_NOTSAFEPOINT
-{
-    uv_mutex_lock(&gc_cache_lock);
-    gc_sync_cache_nolock(ptls, &ptls->gc_cache);
-    uv_mutex_unlock(&gc_cache_lock);
-}
-
 STATIC_INLINE void gc_sync_all_caches_nolock(jl_ptls_t ptls)
 {
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
         gc_sync_cache_nolock(ptls, &ptls2->gc_cache);
     }
+}
+
+void gc_sync_cache(jl_ptls_t ptls) JL_NOTSAFEPOINT
+{
+    uv_mutex_lock(&gc_cache_lock);
+    gc_sync_cache_nolock(ptls, &ptls->gc_cache);
+    uv_mutex_unlock(&gc_cache_lock);
 }
 
 // Weak references
@@ -280,193 +243,6 @@ size_t jl_array_nbytes(jl_array_t *a) JL_NOTSAFEPOINT
         // account for isbits Union array selector bytes
         sz += jl_array_len(a);
     return sz;
-}
-
-// pool allocation
-jl_taggedvalue_t *reset_page(const jl_gc_pool_t *p, jl_gc_pagemeta_t *pg,
-                             jl_taggedvalue_t *fl) JL_NOTSAFEPOINT
-{
-    assert(GC_PAGE_OFFSET >= sizeof(void *));
-    pg->nfree = (GC_PAGE_SZ - GC_PAGE_OFFSET) / p->osize;
-    jl_ptls_t ptls2 = jl_all_tls_states[pg->thread_n];
-    pg->pool_n = p - ptls2->heap.norm_pools;
-    memset(pg->ages, 0, GC_PAGE_SZ / 8 / p->osize + 1);
-    jl_taggedvalue_t *beg = (jl_taggedvalue_t *)(pg->data + GC_PAGE_OFFSET);
-    jl_taggedvalue_t *next = (jl_taggedvalue_t *)pg->data;
-    if (fl == NULL) {
-        next->next = NULL;
-    }
-    else {
-        // Insert free page after first page.
-        // This prevents unnecessary fragmentation from multiple pages
-        // being allocated from at the same time. Instead, objects will
-        // only ever be allocated from the first object in the list.
-        // This is specifically being relied on by the implementation
-        // of jl_gc_internal_obj_base_ptr() so that the function does
-        // not have to traverse the entire list.
-        jl_taggedvalue_t *flpage = (jl_taggedvalue_t *)gc_page_data(fl);
-        next->next = flpage->next;
-        flpage->next = beg;
-        beg = fl;
-    }
-    pg->has_young = 0;
-    pg->has_marked = 0;
-    pg->fl_begin_offset = -1;
-    pg->fl_end_offset = -1;
-    return beg;
-}
-
-// Add a new page to the pool. Discards any pages in `p->newpages` before.
-static NOINLINE jl_taggedvalue_t *add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
-{
-    // Do not pass in `ptls` as argument. This slows down the fast path
-    // in pool_alloc significantly
-    jl_ptls_t ptls = jl_current_task->ptls;
-    jl_gc_pagemeta_t *pg = jl_gc_alloc_page();
-    pg->osize = p->osize;
-    pg->ages = (uint8_t *)malloc_s(GC_PAGE_SZ / 8 / p->osize + 1);
-    pg->thread_n = ptls->tid;
-    jl_taggedvalue_t *fl = reset_page(p, pg, NULL);
-    p->newpages = fl;
-    return fl;
-}
-
-// Size includes the tag and the tag is not cleared!!
-static inline jl_value_t *jl_gc_pool_alloc_inner(jl_ptls_t ptls, int pool_offset, int osize)
-{
-    // Use the pool offset instead of the pool address as the argument
-    // to workaround a llvm bug.
-    // Ref https://llvm.org/bugs/show_bug.cgi?id=27190
-    jl_gc_pool_t *p = (jl_gc_pool_t *)((char *)ptls + pool_offset);
-    assert(jl_atomic_load_relaxed(&ptls->gc_state) == 0);
-#ifdef MEMDEBUG
-    return jl_gc_big_alloc(ptls, osize);
-#endif
-    maybe_collect(ptls);
-    jl_atomic_store_relaxed(&ptls->gc_num.allocd,
-                            jl_atomic_load_relaxed(&ptls->gc_num.allocd) + osize);
-    jl_atomic_store_relaxed(&ptls->gc_num.poolalloc,
-                            jl_atomic_load_relaxed(&ptls->gc_num.poolalloc) + 1);
-    // first try to use the freelist
-    jl_taggedvalue_t *v = p->freelist;
-    if (v) {
-        jl_taggedvalue_t *next = v->next;
-        p->freelist = next;
-        if (__unlikely(gc_page_data(v) != gc_page_data(next))) {
-            // we only update pg's fields when the freelist changes page
-            // since pg's metadata is likely not in cache
-            jl_gc_pagemeta_t *pg = jl_assume(page_metadata(v));
-            assert(pg->osize == p->osize);
-            pg->nfree = 0;
-            pg->has_young = 1;
-        }
-        return jl_valueof(v);
-    }
-    // if the freelist is empty we reuse empty but not freed pages
-    v = p->newpages;
-    jl_taggedvalue_t *next = (jl_taggedvalue_t *)((char *)v + osize);
-    // If there's no pages left or the current page is used up,
-    // we need to use the slow path.
-    char *cur_page = gc_page_data((char *)v - 1);
-    if (__unlikely(!v || cur_page + GC_PAGE_SZ < (char *)next)) {
-        if (v) {
-            // like the freelist case,
-            // but only update the page metadata when it is full
-            jl_gc_pagemeta_t *pg = jl_assume(page_metadata((char *)v - 1));
-            assert(pg->osize == p->osize);
-            pg->nfree = 0;
-            pg->has_young = 1;
-            v = *(jl_taggedvalue_t **)cur_page;
-        }
-        // Not an else!!
-        if (!v)
-            v = add_page(p);
-        next = (jl_taggedvalue_t *)((char *)v + osize);
-    }
-    p->newpages = next;
-    return jl_valueof(v);
-}
-
-// Instrumented version of jl_gc_pool_alloc_inner, called into by LLVM-generated code.
-JL_DLLEXPORT jl_value_t *jl_gc_pool_alloc(jl_ptls_t ptls, int pool_offset, int osize)
-{
-    jl_value_t *val = jl_gc_pool_alloc_inner(ptls, pool_offset, osize);
-    maybe_record_alloc_to_profile(val, osize, jl_gc_unknown_type_tag);
-    return val;
-}
-
-// This wrapper exists only to prevent `jl_gc_pool_alloc_inner` from being inlined into
-// its callers. We provide an external-facing interface for callers, and inline
-// `jl_gc_pool_alloc_inner` into this. (See https://github.com/JuliaLang/julia/pull/43868
-// for more details.)
-jl_value_t *jl_gc_pool_alloc_noinline(jl_ptls_t ptls, int pool_offset, int osize)
-{
-    return jl_gc_pool_alloc_inner(ptls, pool_offset, osize);
-}
-
-int jl_gc_classify_pools(size_t sz, int *osize)
-{
-    if (sz > GC_MAX_SZCLASS)
-        return -1;
-    size_t allocsz = sz + sizeof(jl_taggedvalue_t);
-    int klass = jl_gc_szclass(allocsz);
-    *osize = jl_gc_sizeclasses[klass];
-    return (int)(intptr_t)(&((jl_ptls_t)0)->heap.norm_pools[klass]);
-}
-
-// sweep phase
-
-int64_t lazy_freed_pages = 0;
-
-void *sysimg_base;
-void *sysimg_end;
-void jl_gc_set_permalloc_region(void *start, void *end)
-{
-    sysimg_base = start;
-    sysimg_end = end;
-}
-
-// find unmarked objects that need to be finalized from the finalizer list "list".
-// this must happen last in the mark phase.
-static void sweep_finalizer_list(arraylist_t *list)
-{
-    void **items = list->items;
-    size_t len = list->len;
-    size_t j = 0;
-    for (size_t i = 0; i < len; i += 2) {
-        void *v0 = items[i];
-        void *v = gc_ptr_clear_tag(v0, 1);
-        if (__unlikely(!v0)) {
-            // remove from this list
-            continue;
-        }
-
-        void *fin = items[i + 1];
-        int isfreed = !gc_marked(jl_astaggedvalue(v)->bits.gc);
-        int isold = (list != &finalizer_list_marked &&
-                     jl_astaggedvalue(v)->bits.gc == GC_OLD_MARKED &&
-                     jl_astaggedvalue(fin)->bits.gc == GC_OLD_MARKED);
-        if (isfreed || isold) {
-            // remove from this list
-        }
-        else {
-            if (j < i) {
-                items[j] = items[i];
-                items[j + 1] = items[i + 1];
-            }
-            j += 2;
-        }
-        if (isfreed) {
-            schedule_finalization(v0, fin);
-        }
-        if (isold) {
-            // The caller relies on the new objects to be pushed to the end of
-            // the list!!
-            arraylist_push(&finalizer_list_marked, v0);
-            arraylist_push(&finalizer_list_marked, fin);
-        }
-    }
-    list->len = j;
 }
 
 // collector entry point and control
@@ -550,28 +326,32 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     }
 
     int64_t actual_allocd = gc_num.since_sweep;
-    // 4. check for objects to finalize
-    gc_clear_weak_refs();
-    // Record the length of the marked list since we need to
-    // mark the object moved to the marked list from the
-    // `finalizer_list` by `sweep_finalizer_list`
-    size_t orig_marked_len = finalizer_list_marked.len;
-    for (int i = 0; i < jl_n_threads; i++) {
-        jl_ptls_t ptls2 = jl_all_tls_states[i];
-        sweep_finalizer_list(&ptls2->finalizers);
+
+    // Check for objects to finalize
+    {
+        gc_clear_weak_refs();
+        // Record the length of the marked list since we need to
+        // mark the object moved to the marked list from the
+        // `finalizer_list` by `sweep_finalizer_list`
+        size_t orig_marked_len = finalizer_list_marked.len;
+        for (int i = 0; i < jl_n_threads; i++) {
+            jl_ptls_t ptls2 = jl_all_tls_states[i];
+            sweep_finalizer_list(&ptls2->finalizers);
+        }
+        if (prev_sweep_full) {
+            sweep_finalizer_list(&finalizer_list_marked);
+            orig_marked_len = 0;
+        }
+        for (int i = 0; i < jl_n_threads; i++) {
+            jl_ptls_t ptls2 = jl_all_tls_states[i];
+            gc_mark_finlist(ptls, &ptls2->finalizers, 0);
+        }
+        gc_mark_finlist(ptls, &finalizer_list_marked, orig_marked_len);
+        // "Flush" the mark stack before flipping the reset_age bit
+        // so that the objects are not incorrectly reset.
+        gc_mark_loop(ptls);
     }
-    if (prev_sweep_full) {
-        sweep_finalizer_list(&finalizer_list_marked);
-        orig_marked_len = 0;
-    }
-    for (int i = 0; i < jl_n_threads; i++) {
-        jl_ptls_t ptls2 = jl_all_tls_states[i];
-        gc_mark_finlist(ptls, &ptls2->finalizers, 0);
-    }
-    gc_mark_finlist(ptls, &finalizer_list_marked, orig_marked_len);
-    // "Flush" the mark stack before flipping the reset_age bit
-    // so that the objects are not incorrectly reset.
-    gc_mark_loop(ptls);
+
     // Conservative marking relies on age to tell allocated objects
     // and freelist entries apart.
     mark_reset_age = !jl_gc_conservative_gc_support_enabled();
