@@ -38,33 +38,6 @@ size_t max_collect_interval = 500000000UL;
 memsize_t max_total_memory = (memsize_t)2 * 1024 * 1024 * 1024;
 #endif
 
-// explicitly scheduled objects for the sweepfunc callback
-void gc_sweep_foreign_objs_in_list(arraylist_t *objs)
-{
-    size_t p = 0;
-    for (size_t i = 0; i < objs->len; i++) {
-        jl_value_t *v = (jl_value_t *)(objs->items[i]);
-        jl_datatype_t *t = (jl_datatype_t *)(jl_typeof(v));
-        const jl_datatype_layout_t *layout = t->layout;
-        jl_fielddescdyn_t *desc = (jl_fielddescdyn_t *)jl_dt_layout_fields(layout);
-
-        int bits = jl_astaggedvalue(v)->bits.gc;
-        if (!gc_marked(bits))
-            desc->sweepfunc(v);
-        else
-            objs->items[p++] = v;
-    }
-    objs->len = p;
-}
-
-void gc_sweep_foreign_objs(void)
-{
-    for (int i = 0; i < jl_n_threads; i++) {
-        jl_ptls_t ptls2 = jl_all_tls_states[i];
-        gc_sweep_foreign_objs_in_list(&ptls2->sweep_objs);
-    }
-}
-
 void gc_sweep_weak_refs(void)
 {
     for (int i = 0; i < jl_n_threads; i++) {
@@ -277,6 +250,33 @@ void gc_sweep_pool(int sweep_full)
     }
 
     gc_time_pool_end(sweep_full);
+}
+
+// explicitly scheduled objects for the sweepfunc callback
+void gc_sweep_foreign_objs_in_list(arraylist_t *objs)
+{
+    size_t p = 0;
+    for (size_t i = 0; i < objs->len; i++) {
+        jl_value_t *v = (jl_value_t *)(objs->items[i]);
+        jl_datatype_t *t = (jl_datatype_t *)(jl_typeof(v));
+        const jl_datatype_layout_t *layout = t->layout;
+        jl_fielddescdyn_t *desc = (jl_fielddescdyn_t *)jl_dt_layout_fields(layout);
+
+        int bits = jl_astaggedvalue(v)->bits.gc;
+        if (!gc_marked(bits))
+            desc->sweepfunc(v);
+        else
+            objs->items[p++] = v;
+    }
+    objs->len = p;
+}
+
+void gc_sweep_foreign_objs(void)
+{
+    for (int i = 0; i < jl_n_threads; i++) {
+        jl_ptls_t ptls2 = jl_all_tls_states[i];
+        gc_sweep_foreign_objs_in_list(&ptls2->sweep_objs);
+    }
 }
 
 #ifdef __cplusplus

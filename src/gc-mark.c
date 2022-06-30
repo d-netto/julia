@@ -25,6 +25,10 @@ extern jl_gc_callback_list_t *gc_cblist_post_gc;
 extern jl_gc_callback_list_t *gc_cblist_notify_external_alloc;
 extern jl_gc_callback_list_t *gc_cblist_notify_external_free;
 
+#ifdef JL_DEBUG_BUILD
+static void *volatile gc_findval; // for usage from gdb, for finding the gc-root for a value
+#endif
+
 JL_DLLEXPORT void jl_gc_queue_root(const jl_value_t *ptr)
 {
     jl_ptls_t ptls = jl_current_task->ptls;

@@ -109,33 +109,6 @@ static void jl_gc_wait_for_the_world(void)
     }
 }
 
-// explicitly scheduled objects for the sweepfunc callback
-static void gc_sweep_foreign_objs_in_list(arraylist_t *objs)
-{
-    size_t p = 0;
-    for (size_t i = 0; i < objs->len; i++) {
-        jl_value_t *v = (jl_value_t *)(objs->items[i]);
-        jl_datatype_t *t = (jl_datatype_t *)(jl_typeof(v));
-        const jl_datatype_layout_t *layout = t->layout;
-        jl_fielddescdyn_t *desc = (jl_fielddescdyn_t *)jl_dt_layout_fields(layout);
-
-        int bits = jl_astaggedvalue(v)->bits.gc;
-        if (!gc_marked(bits))
-            desc->sweepfunc(v);
-        else
-            objs->items[p++] = v;
-    }
-    objs->len = p;
-}
-
-static void gc_sweep_foreign_objs(void)
-{
-    for (int i = 0; i < jl_n_threads; i++) {
-        jl_ptls_t ptls2 = jl_all_tls_states[i];
-        gc_sweep_foreign_objs_in_list(&ptls2->sweep_objs);
-    }
-}
-
 extern int64_t last_gc_total_bytes;
 
 // global variables for GC stats
@@ -444,18 +417,6 @@ int jl_gc_classify_pools(size_t sz, int *osize)
 // sweep phase
 
 int64_t lazy_freed_pages = 0;
-
-static void gc_sweep_perm_alloc(void)
-{
-    uint64_t t0 = jl_hrtime();
-    gc_sweep_sysimg();
-    gc_time_sysimg_end(t0);
-}
-
-
-#ifdef JL_DEBUG_BUILD
-static void *volatile gc_findval; // for usage from gdb, for finding the gc-root for a value
-#endif
 
 void *sysimg_base;
 void *sysimg_end;

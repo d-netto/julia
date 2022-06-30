@@ -244,8 +244,19 @@ STATIC_INLINE void gc_pool_sync_nfree(jl_gc_pagemeta_t *pg,
     pg->nfree = nfree;
 }
 
-// setup the data-structures for a sweep over all memory pools
+
 void gc_sweep_pool(int sweep_full);
+
+void gc_sweep_foreign_objs_in_list(arraylist_t *objs);
+void gc_sweep_foreign_objs(void);
+
+STATIC_INLINE void gc_sweep_perm_alloc(void)
+{
+    uint64_t t0 = jl_hrtime();
+    gc_sweep_sysimg();
+    gc_time_sysimg_end(t0);
+}
+
 
 #ifdef __cplusplus
 }
