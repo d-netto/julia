@@ -239,7 +239,6 @@ void gc_sync_cache(jl_ptls_t ptls) JL_NOTSAFEPOINT
     uv_mutex_unlock(&gc_cache_lock);
 }
 
-// No other threads can be running marking at the same time
 STATIC_INLINE void gc_sync_all_caches_nolock(jl_ptls_t ptls)
 {
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
@@ -284,7 +283,7 @@ void jl_gc_track_malloced_array(jl_ptls_t ptls, jl_array_t *a) JL_NOTSAFEPOINT
 {
     // This is **NOT** a GC safe point.
     mallocarray_t *ma;
-    if (ptls->heap.mafreelist == NULL) {
+    if (!ptls->heap.mafreelist) {
         ma = (mallocarray_t *)malloc_s(sizeof(mallocarray_t));
     }
     else {
@@ -631,38 +630,47 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     int64_t live_sz_est = scanned_bytes + perm_scanned_bytes;
     int64_t estimate_freed = live_sz_ub - live_sz_est;
 
-    gc_verify(ptls);
+    // Verification and stats
+    {
+        gc_verify(ptls);
+        gc_stats_all_pool();
+        gc_stats_big_obj();
+        objprofile_printall();
+        objprofile_reset();
+    }
 
-    gc_stats_all_pool();
-    gc_stats_big_obj();
-    objprofile_printall();
-    objprofile_reset();
     gc_num.total_allocd += gc_num.since_sweep;
     if (!prev_sweep_full)
         promoted_bytes += perm_scanned_bytes - last_perm_scanned_bytes;
-    // 5. next collection decision
-    int not_freed_enough =
-        (collection == JL_GC_AUTO) && estimate_freed < (7 * (actual_allocd / 10));
-    int nptr = 0;
-    for (int i = 0; i < jl_n_threads; i++)
-        nptr += jl_all_tls_states[i]->heap.remset_nptr;
 
-    // many pointers in the intergen frontier => "quick" mark is not quick
-    int large_frontier = nptr * sizeof(void *) >= default_collect_interval;
-    int sweep_full = 0;
-    int recollect = 0;
+    // Next collection decision
+    int large_frontier;
+    int sweep_full;
+    int recollect;
+    {
+        int not_freed_enough =
+            (collection == JL_GC_AUTO) && estimate_freed < (7 * (actual_allocd / 10));
+        int nptr = 0;
+        for (int i = 0; i < jl_n_threads; i++) {
+            nptr += jl_all_tls_states[i]->heap.remset_nptr;
+        }
+        // many pointers in the intergen frontier => "quick" mark is not quick
+        large_frontier = nptr * sizeof(void *) >= default_collect_interval;
+        sweep_full = 0;
+        recollect = 0;
 
-    // update heuristics only if this GC was automatically triggered
-    if (collection == JL_GC_AUTO) {
-        if (not_freed_enough) {
-            gc_num.interval = gc_num.interval * 2;
-        }
-        if (large_frontier) {
-            sweep_full = 1;
-        }
-        if (gc_num.interval > max_collect_interval) {
-            sweep_full = 1;
-            gc_num.interval = max_collect_interval;
+        // update heuristics only if this GC was automatically triggered
+        if (collection == JL_GC_AUTO) {
+            if (not_freed_enough) {
+                gc_num.interval = gc_num.interval * 2;
+            }
+            if (large_frontier) {
+                sweep_full = 1;
+            }
+            if (gc_num.interval > max_collect_interval) {
+                sweep_full = 1;
+                gc_num.interval = max_collect_interval;
+            }
         }
     }
 
@@ -687,8 +695,8 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         promoted_bytes = 0;
     }
 
-    scanned_bytes = 0;
     uint64_t pause;
+    scanned_bytes = 0;
 
     // Sweeping
     {
@@ -715,8 +723,7 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         gc_num.sweep_time = sweep_time;
     }
 
-    // sweeping is over
-    // 7. if it is a quick sweep, put back the remembered objects in queued state
+    // if it is a quick sweep, put back the remembered objects in queued state
     // so that we don't trigger the barrier again on them.
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
@@ -747,12 +754,12 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     }
 #endif
 
+    gc_num.full_sweep += sweep_full;
 
     _report_gc_finished(pause, gc_num.freed, sweep_full, recollect);
-
     gc_final_pause_end(gc_start_time, gc_end_time);
     gc_time_sweep_pause(gc_end_time, actual_allocd, live_bytes, estimate_freed, sweep_full);
-    gc_num.full_sweep += sweep_full;
+
     uint64_t max_memory = last_live_bytes + gc_num.allocd;
     if (max_memory > gc_num.max_memory) {
         gc_num.max_memory = max_memory;
@@ -802,80 +809,94 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 
 JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
 {
-    JL_PROBE_GC_BEGIN(collection);
-
+    int last_errno;
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
-    if (jl_atomic_load_relaxed(&jl_gc_disable_counter)) {
-        size_t localbytes = jl_atomic_load_relaxed(&ptls->gc_num.allocd) + gc_num.interval;
-        jl_atomic_store_relaxed(&ptls->gc_num.allocd, -(int64_t)gc_num.interval);
-        static_assert(sizeof(_Atomic(uint64_t)) == sizeof(gc_num.deferred_alloc), "");
-        jl_atomic_fetch_add((_Atomic(uint64_t) *)&gc_num.deferred_alloc, localbytes);
-        return;
-    }
-    jl_gc_debug_print();
 
-    int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
-    jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
-    // `jl_safepoint_start_gc()` makes sure only one thread can
-    // run the GC.
-    uint64_t t0 = jl_hrtime();
-    if (!jl_safepoint_start_gc()) {
-        // Multithread only. See assertion in `safepoint.c`
-        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
-        return;
-    }
-    JL_TIMING(GC);
-    int last_errno = errno;
-#ifdef _OS_WINDOWS_
-    DWORD last_error = GetLastError();
-#endif
-    // Now we are ready to wait for other threads to hit the safepoint,
-    // we can do a few things that doesn't require synchronization.
-    // TODO (concurrently queue objects)
-    // no-op for non-threading
-    jl_gc_wait_for_the_world();
-    JL_PROBE_GC_STOP_THE_WORLD();
-
-    uint64_t t1 = jl_hrtime();
-    uint64_t duration = t1 - t0;
-    if (duration > gc_num.max_time_to_safepoint)
-        gc_num.max_time_to_safepoint = duration;
-    gc_num.time_to_safepoint = duration;
-
-    gc_invoke_callbacks(jl_gc_cb_pre_gc_t, gc_cblist_pre_gc, (collection));
-
-    if (!jl_atomic_load_relaxed(&jl_gc_disable_counter)) {
-        JL_LOCK_NOGC(&finalizers_lock);
-        if (_jl_gc_collect(ptls, collection)) {
-            // recollect
-            int ret = _jl_gc_collect(ptls, JL_GC_AUTO);
-            (void)ret;
-            assert(!ret);
+    // Collection
+    JL_PROBE_GC_BEGIN(collection);
+    {
+        if (jl_atomic_load_relaxed(&jl_gc_disable_counter)) {
+            size_t localbytes =
+                jl_atomic_load_relaxed(&ptls->gc_num.allocd) + gc_num.interval;
+            jl_atomic_store_relaxed(&ptls->gc_num.allocd, -(int64_t)gc_num.interval);
+            static_assert(sizeof(_Atomic(uint64_t)) == sizeof(gc_num.deferred_alloc), "");
+            jl_atomic_fetch_add((_Atomic(uint64_t) *)&gc_num.deferred_alloc, localbytes);
+            return;
         }
-        JL_UNLOCK_NOGC(&finalizers_lock);
-    }
+        jl_gc_debug_print();
 
-    // no-op for non-threading
-    jl_safepoint_end_gc();
-    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+        int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
+        jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
+
+        // `jl_safepoint_start_gc()` makes sure only one thread can
+        // run the GC.
+        uint64_t t0 = jl_hrtime();
+        if (!jl_safepoint_start_gc()) {
+            // Multithread only. See assertion in `safepoint.c`
+            jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+            return;
+        }
+        JL_TIMING(GC);
+
+        last_errno = errno;
+
+#ifdef _OS_WINDOWS_
+        DWORD last_error = GetLastError();
+#endif
+
+        // Now we are ready to wait for other threads to hit the safepoint,
+        // we can do a few things that doesn't require synchronization.
+        // TODO (concurrently queue objects)
+        // no-op for non-threading
+        jl_gc_wait_for_the_world();
+        JL_PROBE_GC_STOP_THE_WORLD();
+
+        uint64_t t1 = jl_hrtime();
+        uint64_t duration = t1 - t0;
+        if (duration > gc_num.max_time_to_safepoint)
+            gc_num.max_time_to_safepoint = duration;
+        gc_num.time_to_safepoint = duration;
+
+        gc_invoke_callbacks(jl_gc_cb_pre_gc_t, gc_cblist_pre_gc, (collection));
+
+        if (!jl_atomic_load_relaxed(&jl_gc_disable_counter)) {
+            JL_LOCK_NOGC(&finalizers_lock);
+            if (_jl_gc_collect(ptls, collection)) {
+                // recollect
+                int ret = _jl_gc_collect(ptls, JL_GC_AUTO);
+                (void)ret;
+                assert(!ret);
+            }
+            JL_UNLOCK_NOGC(&finalizers_lock);
+        }
+
+        // no-op for non-threading
+        jl_safepoint_end_gc();
+        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+    }
     JL_PROBE_GC_END();
 
-    // Only disable finalizers on current thread
-    // Doing this on all threads is racy (it's impossible to check
-    // or wait for finalizers on other threads without dead lock).
-    if (!ptls->finalizers_inhibited && ptls->locks.len == 0) {
-        int8_t was_in_finalizer = ptls->in_finalizer;
-        ptls->in_finalizer = 1;
-        run_finalizers(ct);
-        ptls->in_finalizer = was_in_finalizer;
+    // Finalizers
+    {
+        // Only disable finalizers on current thread
+        // Doing this on all threads is racy (it's impossible to check
+        // or wait for finalizers on other threads without dead lock).
+        if (!ptls->finalizers_inhibited && ptls->locks.len == 0) {
+            int8_t was_in_finalizer = ptls->in_finalizer;
+            ptls->in_finalizer = 1;
+            run_finalizers(ct);
+            ptls->in_finalizer = was_in_finalizer;
+        }
     }
     JL_PROBE_GC_FINALIZER();
 
     gc_invoke_callbacks(jl_gc_cb_post_gc_t, gc_cblist_post_gc, (collection));
+
 #ifdef _OS_WINDOWS_
     SetLastError(last_error);
 #endif
+
     errno = last_errno;
 }
 
