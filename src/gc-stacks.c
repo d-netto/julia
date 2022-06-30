@@ -175,7 +175,7 @@ JL_DLLEXPORT void *jl_malloc_stack(size_t *bufsz, jl_task_t *owner) JL_NOTSAFEPO
     return stk;
 }
 
-void sweep_stack_pools(void)
+void gc_sweep_stack_pools(void)
 {
     // Stack sweeping algorithm:
     //    // deallocate stacks if we have too many sitting around unused
