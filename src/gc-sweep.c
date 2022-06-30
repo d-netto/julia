@@ -172,7 +172,7 @@ void gc_sweep_malloced_arrays(void) JL_NOTSAFEPOINT
 }
 
 // sweep over all memory for all pagetable1 that may contain allocated pages
-void sweep_pool_pagetable(jl_taggedvalue_t ***pfl, int sweep_full) JL_NOTSAFEPOINT
+void gc_sweep_pool_pagetable(jl_taggedvalue_t ***pfl, int sweep_full) JL_NOTSAFEPOINT
 {
     if (REGION2_PG_COUNT == 1) { // compile-time optimization
         pagetable1_t *pagetable1 = memory_map.meta1[0];
@@ -243,7 +243,7 @@ void gc_sweep_pool(int sweep_full)
     }
 
     // the actual sweeping
-    sweep_pool_pagetable(pfl, sweep_full);
+    gc_sweep_pool_pagetable(pfl, sweep_full);
 
     // null out terminal pointers of free lists
     for (int t_i = 0; t_i < n_threads; t_i++) {
@@ -257,7 +257,7 @@ void gc_sweep_pool(int sweep_full)
 
 // find unmarked objects that need to be finalized from the finalizer list "list".
 // this must happen last in the mark phase.
-void sweep_finalizer_list(arraylist_t *list)
+void gc_sweep_finalizer_list(arraylist_t *list)
 {
     void **items = list->items;
     size_t len = list->len;

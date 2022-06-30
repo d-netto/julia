@@ -140,9 +140,10 @@ JL_DLLEXPORT jl_value_t *(jl_gc_alloc)(jl_ptls_t ptls, size_t sz, void *ty);
 
 // Pool allocation
 
-jl_taggedvalue_t *reset_page(const jl_gc_pool_t *p, jl_gc_pagemeta_t *pg,
-                             jl_taggedvalue_t *fl) JL_NOTSAFEPOINT;
-NOINLINE jl_taggedvalue_t *add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT;
+jl_taggedvalue_t *gc_reset_page(const jl_gc_pool_t *p, jl_gc_pagemeta_t *pg,
+                                jl_taggedvalue_t *fl) JL_NOTSAFEPOINT;
+NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT;
+
 // Size includes the tag and the tag is not cleared!!
 STATIC_INLINE jl_value_t *jl_gc_pool_alloc_inner(jl_ptls_t ptls, int pool_offset, int osize)
 {
@@ -192,7 +193,7 @@ STATIC_INLINE jl_value_t *jl_gc_pool_alloc_inner(jl_ptls_t ptls, int pool_offset
         }
         // Not an else!!
         if (!v)
-            v = add_page(p);
+            v = gc_add_page(p);
         next = (jl_taggedvalue_t *)((char *)v + osize);
     }
     p->newpages = next;

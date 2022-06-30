@@ -9,22 +9,22 @@
 #ifndef JL_GC_H
 #define JL_GC_H
 
+#include "julia.h"
+#include "julia_internal.h"
+#include "julia_threads.h"
+#include "threading.h"
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <inttypes.h>
-#include "julia.h"
-#include "julia_threads.h"
-#include "julia_internal.h"
-#include "threading.h"
 #ifndef _OS_WINDOWS_
 #include <sys/mman.h>
 #if defined(_OS_DARWIN_) && !defined(MAP_ANONYMOUS)
 #define MAP_ANONYMOUS MAP_ANON
 #endif
 #endif
-#include "julia_assert.h"
 #include "gc-alloc-profiler.h"
+#include "julia_assert.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,8 +34,8 @@ extern "C" {
 #define GC_PAGE_SZ (1 << GC_PAGE_LG2) // 16k
 #define GC_PAGE_OFFSET (JL_HEAP_ALIGNMENT - (sizeof(jl_taggedvalue_t) % JL_HEAP_ALIGNMENT))
 
-#define jl_malloc_tag ((void*)0xdeadaa01)
-#define jl_singleton_tag ((void*)0xdeadaa02)
+#define jl_malloc_tag ((void *)0xdeadaa01)
+#define jl_singleton_tag ((void *)0xdeadaa02)
 
 // Used by GC_DEBUG_ENV
 typedef struct {
@@ -57,28 +57,28 @@ typedef struct {
 
 // This struct must be kept in sync with the Julia type of the same name in base/timing.jl
 typedef struct {
-    int64_t     allocd;
-    int64_t     deferred_alloc;
-    int64_t     freed;
-    uint64_t    malloc;
-    uint64_t    realloc;
-    uint64_t    poolalloc;
-    uint64_t    bigalloc;
-    uint64_t    freecall;
-    uint64_t    total_time;
-    uint64_t    total_allocd;
-    uint64_t    since_sweep;
-    size_t      interval;
-    int         pause;
-    int         full_sweep;
-    uint64_t    max_pause;
-    uint64_t    max_memory;
-    uint64_t    time_to_safepoint;
-    uint64_t    max_time_to_safepoint;
-    uint64_t    sweep_time;
-    uint64_t    mark_time;
-    uint64_t    total_sweep_time;
-    uint64_t    total_mark_time;
+    int64_t allocd;
+    int64_t deferred_alloc;
+    int64_t freed;
+    uint64_t malloc;
+    uint64_t realloc;
+    uint64_t poolalloc;
+    uint64_t bigalloc;
+    uint64_t freecall;
+    uint64_t total_time;
+    uint64_t total_allocd;
+    uint64_t since_sweep;
+    size_t interval;
+    int pause;
+    int full_sweep;
+    uint64_t max_pause;
+    uint64_t max_memory;
+    uint64_t time_to_safepoint;
+    uint64_t max_time_to_safepoint;
+    uint64_t sweep_time;
+    uint64_t mark_time;
+    uint64_t total_sweep_time;
+    uint64_t total_mark_time;
 } jl_gc_num_t;
 
 // Double the mark queue
@@ -87,14 +87,14 @@ static void NOINLINE gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
     jl_value_t **old_start = mq->start;
     size_t old_queue_size = (mq->end - mq->start);
     size_t offset = (mq->current - old_start);
-    mq->start = (jl_value_t**)realloc_s(old_start, 2 * old_queue_size * sizeof(jl_value_t*));
+    mq->start =
+        (jl_value_t **)realloc_s(old_start, 2 * old_queue_size * sizeof(jl_value_t *));
     mq->current = (mq->start + offset);
     mq->end = (mq->start + 2 * old_queue_size);
 }
 
 // Push a work item to the queue
-STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, 
-                                     jl_value_t *obj) JL_NOTSAFEPOINT
+STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
 {
     if (__unlikely(mq->current == mq->end))
         gc_markqueue_resize(mq);
@@ -128,11 +128,11 @@ JL_EXTENSION typedef struct _bigval_t {
     // (16 pointers of 4 bytes each) - (4 other pointers in struct)
     void *_padding[16 - 4];
 #endif
-    //struct jl_taggedvalue_t <>;
+    // struct jl_taggedvalue_t <>;
     union {
         uintptr_t header;
         struct {
-            uintptr_t gc:2;
+            uintptr_t gc : 2;
         } bits;
     };
     // must be 64-byte aligned here, in 32 & 64 bit modes
@@ -175,8 +175,8 @@ typedef struct {
     uint16_t nfree;
     uint16_t osize; // size of each object in this page
     uint16_t fl_begin_offset; // offset of first free object in this page
-    uint16_t fl_end_offset;   // offset of last free object in this page
-    uint16_t thread_n;        // thread id of the heap that owns this page
+    uint16_t fl_end_offset; // offset of last free object in this page
+    uint16_t thread_n; // thread id of the heap that owns this page
     char *data;
     uint8_t *ages;
 } jl_gc_pagemeta_t;
@@ -202,21 +202,22 @@ typedef struct {
 
 //  The following constants define the branching factors at each level.
 //  The constants and GC_PAGE_LG2 must therefore sum to sizeof(void*).
-//  They should all be multiples of 32 (sizeof(uint32_t)) except that REGION2_PG_COUNT may also be 1.
+//  They should all be multiples of 32 (sizeof(uint32_t)) except that REGION2_PG_COUNT may
+//  also be 1.
 #ifdef _P64
 #define REGION0_PG_COUNT (1 << 16)
 #define REGION1_PG_COUNT (1 << 16)
 #define REGION2_PG_COUNT (1 << 18)
 #define REGION0_INDEX(p) (((uintptr_t)(p) >> 14) & 0xFFFF) // shift by GC_PAGE_LG2
 #define REGION1_INDEX(p) (((uintptr_t)(p) >> 30) & 0xFFFF)
-#define REGION_INDEX(p)  (((uintptr_t)(p) >> 46) & 0x3FFFF)
+#define REGION_INDEX(p) (((uintptr_t)(p) >> 46) & 0x3FFFF)
 #else
 #define REGION0_PG_COUNT (1 << 8)
 #define REGION1_PG_COUNT (1 << 10)
 #define REGION2_PG_COUNT (1 << 0)
 #define REGION0_INDEX(p) (((uintptr_t)(p) >> 14) & 0xFF) // shift by GC_PAGE_LG2
 #define REGION1_INDEX(p) (((uintptr_t)(p) >> 22) & 0x3FF)
-#define REGION_INDEX(p)  (0)
+#define REGION_INDEX(p) (0)
 #endif
 
 // define the representation of the levels of the page-table (0 to 2)
@@ -274,17 +275,17 @@ STATIC_INLINE bigval_t *bigval_header(jl_taggedvalue_t *o) JL_NOTSAFEPOINT
 // round an address inside a gcpage's data to its beginning
 STATIC_INLINE char *gc_page_data(void *x) JL_NOTSAFEPOINT
 {
-    return (char*)(((uintptr_t)x >> GC_PAGE_LG2) << GC_PAGE_LG2);
+    return (char *)(((uintptr_t)x >> GC_PAGE_LG2) << GC_PAGE_LG2);
 }
 
 STATIC_INLINE jl_taggedvalue_t *page_pfl_beg(jl_gc_pagemeta_t *p) JL_NOTSAFEPOINT
 {
-    return (jl_taggedvalue_t*)(p->data + p->fl_begin_offset);
+    return (jl_taggedvalue_t *)(p->data + p->fl_begin_offset);
 }
 
 STATIC_INLINE jl_taggedvalue_t *page_pfl_end(jl_gc_pagemeta_t *p) JL_NOTSAFEPOINT
 {
-    return (jl_taggedvalue_t*)(p->data + p->fl_end_offset);
+    return (jl_taggedvalue_t *)(p->data + p->fl_end_offset);
 }
 
 STATIC_INLINE int gc_marked(uintptr_t bits) JL_NOTSAFEPOINT
@@ -309,7 +310,7 @@ STATIC_INLINE uintptr_t gc_ptr_tag(void *v, uintptr_t mask) JL_NOTSAFEPOINT
 
 STATIC_INLINE void *gc_ptr_clear_tag(void *v, uintptr_t mask) JL_NOTSAFEPOINT
 {
-    return (void*)(((uintptr_t)v) & ~mask);
+    return (void *)(((uintptr_t)v) & ~mask);
 }
 
 STATIC_INLINE jl_gc_pagemeta_t *page_metadata(void *_data) JL_NOTSAFEPOINT
@@ -376,8 +377,7 @@ STATIC_INLINE void gc_big_object_link(bigval_t *hdr, bigval_t **list) JL_NOTSAFE
 }
 
 void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_markqueue_t *mq);
-void gc_mark_queue_finlist(jl_gc_markqueue_t *mq,
-                           arraylist_t *list, size_t start);
+void gc_mark_queue_finlist(jl_gc_markqueue_t *mq, arraylist_t *list, size_t start);
 void gc_mark_loop(jl_ptls_t ptls);
 void gc_sweep_stack_pools(void);
 void jl_gc_debug_init(void);
@@ -420,15 +420,12 @@ void gc_time_mallocd_array_start(void) JL_NOTSAFEPOINT;
 void gc_time_count_mallocd_array(int bits) JL_NOTSAFEPOINT;
 void gc_time_mallocd_array_end(void) JL_NOTSAFEPOINT;
 
-void gc_time_mark_pause(int64_t t0, int64_t scanned_bytes,
-                        int64_t perm_scanned_bytes);
-void gc_time_sweep_pause(uint64_t gc_end_t, int64_t actual_allocd,
-                         int64_t live_bytes, int64_t estimate_freed,
-                         int sweep_full);
-void gc_time_summary(int sweep_full, uint64_t start, uint64_t end,
-                     uint64_t freed, uint64_t live, uint64_t interval,
-                     uint64_t pause, uint64_t ttsp, uint64_t mark,
-                     uint64_t sweep);
+void gc_time_mark_pause(int64_t t0, int64_t scanned_bytes, int64_t perm_scanned_bytes);
+void gc_time_sweep_pause(uint64_t gc_end_t, int64_t actual_allocd, int64_t live_bytes,
+                         int64_t estimate_freed, int sweep_full);
+void gc_time_summary(int sweep_full, uint64_t start, uint64_t end, uint64_t freed,
+                     uint64_t live, uint64_t interval, uint64_t pause, uint64_t ttsp,
+                     uint64_t mark, uint64_t sweep);
 #else
 #define gc_time_pool_start()
 STATIC_INLINE void gc_time_count_page(int freedall, int pg_skpd) JL_NOTSAFEPOINT
@@ -452,57 +449,59 @@ STATIC_INLINE void gc_time_count_mallocd_array(int bits) JL_NOTSAFEPOINT
 }
 #define gc_time_mallocd_array_end()
 #define gc_time_mark_pause(t0, scanned_bytes, perm_scanned_bytes)
-#define gc_time_sweep_pause(gc_end_t, actual_allocd, live_bytes,        \
-                            estimate_freed, sweep_full)
-#define  gc_time_summary(sweep_full, start, end, freed, live,           \
-                         interval, pause, ttsp, mark, sweep)
+#define gc_time_sweep_pause(gc_end_t, actual_allocd, live_bytes, estimate_freed, sweep_full)
+#define gc_time_summary(sweep_full, start, end, freed, live, interval, pause, ttsp, mark, \
+                        sweep)
 #endif
 
 #ifdef MEMFENCE
 void gc_verify_tags(void);
 #else
-static inline void gc_verify_tags(void)
-{
-}
+static inline void gc_verify_tags(void) {}
 #endif
 
 #ifdef GC_VERIFY
 extern jl_value_t *lostval;
 void gc_verify(jl_ptls_t ptls);
 void add_lostval_parent(jl_value_t *parent);
-#define verify_val(v) do {                                              \
-        if (lostval == (jl_value_t*)(v) && (v) != 0) {                  \
-            jl_printf(JL_STDOUT,                                        \
-                      "Found lostval %p at %s:%d oftype: ",             \
-                      (void*)(lostval), __FILE__, __LINE__);            \
-            jl_static_show(JL_STDOUT, jl_typeof(v));                    \
-            jl_printf(JL_STDOUT, "\n");                                 \
-        }                                                               \
-    } while(0);
+#define verify_val(v)                                                                     \
+    do {                                                                                  \
+        if (lostval == (jl_value_t *)(v) && (v) != 0) {                                   \
+            jl_printf(JL_STDOUT, "Found lostval %p at %s:%d oftype: ", (void *)(lostval), \
+                      __FILE__, __LINE__);                                                \
+            jl_static_show(JL_STDOUT, jl_typeof(v));                                      \
+            jl_printf(JL_STDOUT, "\n");                                                   \
+        }                                                                                 \
+    } while (0);
 
-#define verify_parent(ty, obj, slot, args...) do {                      \
-        if (gc_ptr_clear_tag(*(void**)(slot), 3) == (void*)lostval &&   \
-            (jl_value_t*)(obj) != lostval) {                            \
-            jl_printf(JL_STDOUT, "Found parent %p %p at %s:%d\n",       \
-                      (void*)(ty), (void*)(obj), __FILE__, __LINE__);   \
-            jl_printf(JL_STDOUT, "\tloc %p : ", (void*)(slot));         \
-            jl_printf(JL_STDOUT, args);                                 \
-            jl_printf(JL_STDOUT, "\n");                                 \
-            jl_printf(JL_STDOUT, "\ttype: ");                           \
-            jl_static_show(JL_STDOUT, jl_typeof(obj));                  \
-            jl_printf(JL_STDOUT, "\n");                                 \
-            add_lostval_parent((jl_value_t*)(obj));                     \
-        }                                                               \
-    } while(0);
+#define verify_parent(ty, obj, slot, args...)                                   \
+    do {                                                                        \
+        if (gc_ptr_clear_tag(*(void **)(slot), 3) == (void *)lostval &&         \
+            (jl_value_t *)(obj) != lostval) {                                   \
+            jl_printf(JL_STDOUT, "Found parent %p %p at %s:%d\n", (void *)(ty), \
+                      (void *)(obj), __FILE__, __LINE__);                       \
+            jl_printf(JL_STDOUT, "\tloc %p : ", (void *)(slot));                \
+            jl_printf(JL_STDOUT, args);                                         \
+            jl_printf(JL_STDOUT, "\n");                                         \
+            jl_printf(JL_STDOUT, "\ttype: ");                                   \
+            jl_static_show(JL_STDOUT, jl_typeof(obj));                          \
+            jl_printf(JL_STDOUT, "\n");                                         \
+            add_lostval_parent((jl_value_t *)(obj));                            \
+        }                                                                       \
+    } while (0);
 
-#define verify_parent1(ty,obj,slot,arg1) verify_parent(ty,obj,slot,arg1)
-#define verify_parent2(ty,obj,slot,arg1,arg2) verify_parent(ty,obj,slot,arg1,arg2)
+#define verify_parent1(ty, obj, slot, arg1) verify_parent(ty, obj, slot, arg1)
+#define verify_parent2(ty, obj, slot, arg1, arg2) verify_parent(ty, obj, slot, arg1, arg2)
 extern int gc_verifying;
 #else
 #define gc_verify(ptls)
 #define verify_val(v)
-#define verify_parent1(ty,obj,slot,arg1) do {} while (0)
-#define verify_parent2(ty,obj,slot,arg1,arg2) do {} while (0)
+#define verify_parent1(ty, obj, slot, arg1) \
+    do {                                    \
+    } while (0)
+#define verify_parent2(ty, obj, slot, arg1, arg2) \
+    do {                                          \
+    } while (0)
 #define gc_verifying (0)
 #endif
 int gc_slot_to_fieldidx(void *_obj, void *slot);
@@ -527,16 +526,12 @@ static inline int gc_debug_check_pool(void)
 {
     return 0;
 }
-static inline void jl_gc_debug_print(void)
-{
-}
+static inline void jl_gc_debug_print(void) {}
 static inline void gc_scrub_record_task(jl_task_t *ta) JL_NOTSAFEPOINT
 {
     (void)ta;
 }
-static inline void gc_scrub(void)
-{
-}
+static inline void gc_scrub(void) {}
 #endif
 
 #ifdef OBJPROFILE
@@ -544,17 +539,11 @@ void objprofile_count(void *ty, int old, int sz) JL_NOTSAFEPOINT;
 void objprofile_printall(void);
 void objprofile_reset(void);
 #else
-static inline void objprofile_count(void *ty, int old, int sz) JL_NOTSAFEPOINT
-{
-}
+static inline void objprofile_count(void *ty, int old, int sz) JL_NOTSAFEPOINT {}
 
-static inline void objprofile_printall(void)
-{
-}
+static inline void objprofile_printall(void) {}
 
-static inline void objprofile_reset(void)
-{
-}
+static inline void objprofile_reset(void) {}
 #endif
 
 #ifdef MEMPROFILE
@@ -571,7 +560,8 @@ void gc_count_pool(void);
 size_t jl_array_nbytes(jl_array_t *a) JL_NOTSAFEPOINT;
 
 JL_DLLEXPORT void jl_enable_gc_logging(int enable);
-void _report_gc_finished(uint64_t pause, uint64_t freed, int full, int recollect) JL_NOTSAFEPOINT;
+void _report_gc_finished(uint64_t pause, uint64_t freed, int full,
+                         int recollect) JL_NOTSAFEPOINT;
 
 #ifdef __cplusplus
 }

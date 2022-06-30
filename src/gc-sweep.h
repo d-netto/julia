@@ -43,8 +43,8 @@ void gc_sweep_big(jl_ptls_t ptls, int sweep_full) JL_NOTSAFEPOINT;
 void gc_free_array(jl_array_t *a) JL_NOTSAFEPOINT;
 void gc_sweep_malloced_arrays(void) JL_NOTSAFEPOINT;
 
-extern jl_taggedvalue_t *reset_page(const jl_gc_pool_t *p, jl_gc_pagemeta_t *pg,
-                                    jl_taggedvalue_t *fl) JL_NOTSAFEPOINT;
+extern jl_taggedvalue_t *gc_reset_page(const jl_gc_pool_t *p, jl_gc_pagemeta_t *pg,
+                                       jl_taggedvalue_t *fl) JL_NOTSAFEPOINT;
 
 // Returns pointer to terminal pointer of list rooted at *pfl.
 STATIC_INLINE jl_taggedvalue_t **sweep_page(jl_gc_pool_t *p, jl_gc_pagemeta_t *pg,
@@ -67,7 +67,7 @@ STATIC_INLINE jl_taggedvalue_t **sweep_page(jl_gc_pool_t *p, jl_gc_pagemeta_t *p
         // FIXME - need to do accounting on a per-thread basis
         // on quick sweeps, keep a few pages empty but allocated for performance
         if (!sweep_full && lazy_freed_pages <= default_collect_interval / GC_PAGE_SZ) {
-            jl_taggedvalue_t *begin = reset_page(p, pg, p->newpages);
+            jl_taggedvalue_t *begin = gc_reset_page(p, pg, p->newpages);
             p->newpages = begin;
             begin->next = (jl_taggedvalue_t *)0;
             lazy_freed_pages++;
@@ -230,7 +230,7 @@ STATIC_INLINE int sweep_pool_pagetable1(jl_taggedvalue_t ***pfl, pagetable1_t *p
 }
 
 // sweep over all memory for all pagetable1 that may contain allocated pages
-void sweep_pool_pagetable(jl_taggedvalue_t ***pfl, int sweep_full) JL_NOTSAFEPOINT;
+void gc_sweep_pool_pagetable(jl_taggedvalue_t ***pfl, int sweep_full) JL_NOTSAFEPOINT;
 
 // sweep over all memory that is being used and not in a pool
 STATIC_INLINE void gc_sweep_other(jl_ptls_t ptls, int sweep_full) JL_NOTSAFEPOINT
@@ -258,7 +258,7 @@ STATIC_INLINE void gc_pool_sync_nfree(jl_gc_pagemeta_t *pg,
 
 
 void gc_sweep_pool(int sweep_full);
-void sweep_finalizer_list(arraylist_t *list);
+void gc_sweep_finalizer_list(arraylist_t *list);
 
 void gc_sweep_foreign_objs_in_list(arraylist_t *objs);
 void gc_sweep_foreign_objs(void);

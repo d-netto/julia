@@ -336,10 +336,10 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         size_t orig_marked_len = finalizer_list_marked.len;
         for (int i = 0; i < jl_n_threads; i++) {
             jl_ptls_t ptls2 = jl_all_tls_states[i];
-            sweep_finalizer_list(&ptls2->finalizers);
+            gc_sweep_finalizer_list(&ptls2->finalizers);
         }
         if (prev_sweep_full) {
-            sweep_finalizer_list(&finalizer_list_marked);
+            gc_sweep_finalizer_list(&finalizer_list_marked);
             orig_marked_len = 0;
         }
         for (int i = 0; i < jl_n_threads; i++) {
