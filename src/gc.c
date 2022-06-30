@@ -137,24 +137,6 @@ static void gc_sweep_foreign_objs(void)
 // GC knobs and self-measurement variables
 static int64_t last_gc_total_bytes = 0;
 
-// max_total_memory is a suggestion.  We try very hard to stay
-// under this limit, but we will go above it rather than halting.
-#ifdef _P64
-typedef uint64_t memsize_t;
-#define default_collect_interval (5600*1024*sizeof(void*))
-static size_t max_collect_interval = 1250000000UL;
-// Eventually we can expose this to the user/ci.
-memsize_t max_total_memory = (memsize_t) 2 * 1024 * 1024 * 1024 * 1024 * 1024;
-#else
-typedef uint32_t memsize_t;
-#define default_collect_interval (3200*1024*sizeof(void*))
-static size_t max_collect_interval =  500000000UL;
-// Work really hard to stay within 2GB
-// Alternative is to risk running out of address space
-// on 32 bit architectures.
-memsize_t max_total_memory = (memsize_t) 2 * 1024 * 1024 * 1024;
-#endif
-
 // global variables for GC stats
 
 // Resetting the object to a young object, this is used when marking the
@@ -366,7 +348,7 @@ size_t jl_array_nbytes(jl_array_t *a) JL_NOTSAFEPOINT
 }
 
 // pool allocation
-static inline jl_taggedvalue_t *reset_page(const jl_gc_pool_t *p, jl_gc_pagemeta_t *pg, jl_taggedvalue_t *fl) JL_NOTSAFEPOINT
+jl_taggedvalue_t *reset_page(const jl_gc_pool_t *p, jl_gc_pagemeta_t *pg, jl_taggedvalue_t *fl) JL_NOTSAFEPOINT
 {
     assert(GC_PAGE_OFFSET >= sizeof(void*));
     pg->nfree = (GC_PAGE_SZ - GC_PAGE_OFFSET) / p->osize;
