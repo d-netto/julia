@@ -23,6 +23,7 @@ extern jl_gc_callback_list_t *gc_cblist_notify_external_free;
 
 int prev_sweep_full = 1;
 
+// GC knobs and self-measurement variables
 int64_t last_gc_total_bytes = 0;
 #ifdef _P64
 size_t max_collect_interval = 1250000000UL;

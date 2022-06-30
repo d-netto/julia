@@ -8,6 +8,7 @@ extern int64_t live_bytes;
 extern int64_t promoted_bytes;
 extern int64_t last_live_bytes; // live_bytes at last collection
 extern int64_t t_start; // Time GC starts;
+extern int64_t last_gc_total_bytes;
 
 void jl_gc_count_allocd(size_t sz) JL_NOTSAFEPOINT
 {
@@ -51,20 +52,6 @@ void jl_gc_reset_alloc_count(void) JL_NOTSAFEPOINT
     gc_num.allocd = 0;
     gc_num.deferred_alloc = 0;
     reset_thread_gc_counts();
-}
-
-size_t jl_array_nbytes(jl_array_t *a) JL_NOTSAFEPOINT
-{
-    size_t sz = 0;
-    int isbitsunion = jl_array_isbitsunion(a);
-    if (jl_array_ndims(a) == 1)
-        sz = a->elsize * a->maxsize + ((a->elsize == 1 && !isbitsunion) ? 1 : 0);
-    else
-        sz = a->elsize * jl_array_len(a);
-    if (isbitsunion)
-        // account for isbits Union array selector bytes
-        sz += jl_array_len(a);
-    return sz;
 }
 
 JL_DLLEXPORT void jl_gc_get_total_bytes(int64_t *bytes) JL_NOTSAFEPOINT
