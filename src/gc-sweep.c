@@ -3,6 +3,7 @@
 #include "gc-sweep.h"
 #include "gc-alloc.h"
 #include "gc-callbacks.h"
+#include "gc-sweep.h"
 #include "gc.h"
 #include "julia_assert.h"
 #include "julia_gcext.h"

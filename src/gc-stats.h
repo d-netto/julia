@@ -10,14 +10,7 @@ extern int64_t last_live_bytes; // live_bytes at last collection
 extern int64_t t_start; // Time GC starts;
 extern int64_t last_gc_total_bytes;
 
-void jl_gc_count_allocd(size_t sz) JL_NOTSAFEPOINT
-{
-    jl_ptls_t ptls = jl_current_task->ptls;
-    jl_atomic_store_relaxed(&ptls->gc_num.allocd,
-                            jl_atomic_load_relaxed(&ptls->gc_num.allocd) + sz);
-}
-
-void combine_thread_gc_counts(jl_gc_num_t *dest) JL_NOTSAFEPOINT
+void gc_combine_thread_counts(jl_gc_num_t *dest) JL_NOTSAFEPOINT
 {
     for (int i = 0; i < jl_n_threads; i++) {
         jl_ptls_t ptls = jl_all_tls_states[i];
@@ -47,17 +40,24 @@ void reset_thread_gc_counts(void) JL_NOTSAFEPOINT
 
 void jl_gc_reset_alloc_count(void) JL_NOTSAFEPOINT
 {
-    combine_thread_gc_counts(&gc_num);
+    gc_combine_thread_counts(&gc_num);
     live_bytes += (gc_num.deferred_alloc + gc_num.allocd);
     gc_num.allocd = 0;
     gc_num.deferred_alloc = 0;
     reset_thread_gc_counts();
 }
 
+void jl_gc_count_allocd(size_t sz) JL_NOTSAFEPOINT
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    jl_atomic_store_relaxed(&ptls->gc_num.allocd,
+                            jl_atomic_load_relaxed(&ptls->gc_num.allocd) + sz);
+}
+
 JL_DLLEXPORT void jl_gc_get_total_bytes(int64_t *bytes) JL_NOTSAFEPOINT
 {
     jl_gc_num_t num = gc_num;
-    combine_thread_gc_counts(&num);
+    gc_combine_thread_counts(&num);
     // Sync this logic with `base/util.jl:GC_Diff`
     *bytes = (num.total_allocd + num.deferred_alloc + num.allocd);
 }
@@ -70,7 +70,7 @@ JL_DLLEXPORT uint64_t jl_gc_total_hrtime(void)
 JL_DLLEXPORT jl_gc_num_t jl_gc_num(void)
 {
     jl_gc_num_t num = gc_num;
-    combine_thread_gc_counts(&num);
+    gc_combine_thread_counts(&num);
     return num;
 }
 

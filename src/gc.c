@@ -248,7 +248,7 @@ static void gc_sync_all_caches_nolock(jl_ptls_t ptls)
     }
 }
 
-// weak references
+// Weak references
 
 JL_DLLEXPORT jl_weakref_t *jl_gc_new_weakref_th(jl_ptls_t ptls, jl_value_t *value)
 {
@@ -272,7 +272,7 @@ static void clear_weak_refs(void)
     }
 }
 
-// tracking Arrays with malloc'd storage
+// Tracking arrays with malloc'd storage
 
 void jl_gc_track_malloced_array(jl_ptls_t ptls, jl_array_t *a) JL_NOTSAFEPOINT
 {
@@ -609,7 +609,7 @@ size_t jl_maxrss(void);
 // Only one thread should be running in this function static int
 int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 {
-    combine_thread_gc_counts(&gc_num);
+    gc_combine_thread_counts(&gc_num);
 
     uint64_t gc_start_time = jl_hrtime();
     int64_t last_perm_scanned_bytes = perm_scanned_bytes;
