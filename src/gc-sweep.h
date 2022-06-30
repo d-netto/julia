@@ -227,6 +227,26 @@ STATIC_INLINE void gc_sweep_other(jl_ptls_t ptls, int sweep_full) JL_NOTSAFEPOIN
     gc_sweep_big(ptls, sweep_full);
 }
 
+STATIC_INLINE void gc_pool_sync_nfree(jl_gc_pagemeta_t *pg,
+                                      jl_taggedvalue_t *last) JL_NOTSAFEPOINT
+{
+    assert(pg->fl_begin_offset != (uint16_t)-1);
+    char *cur_pg = gc_page_data(last);
+    // Fast path for page that has no allocation
+    jl_taggedvalue_t *fl_beg = (jl_taggedvalue_t *)(cur_pg + pg->fl_begin_offset);
+    if (last == fl_beg)
+        return;
+    int nfree = 0;
+    do {
+        nfree++;
+        last = last->next;
+    } while (gc_page_data(last) == cur_pg);
+    pg->nfree = nfree;
+}
+
+// setup the data-structures for a sweep over all memory pools
+void gc_sweep_pool(int sweep_full);
+
 #ifdef __cplusplus
 }
 #endif

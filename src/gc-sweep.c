@@ -224,6 +224,61 @@ void sweep_pool_pagetable(jl_taggedvalue_t ***pfl, int sweep_full) JL_NOTSAFEPOI
     memory_map.ub = ub;
 }
 
+// setup the data-structures for a sweep over all memory pools
+void gc_sweep_pool(int sweep_full)
+{
+    gc_time_pool_start();
+    lazy_freed_pages = 0;
+
+    // For the benfit of the analyzer, which doesn't know that jl_n_threads
+    // doesn't change over the course of this function
+    size_t n_threads = jl_n_threads;
+
+    // allocate enough space to hold the end of the free list chain
+    // for every thread and pool size
+    jl_taggedvalue_t ***pfl = (jl_taggedvalue_t ***)alloca(n_threads * JL_GC_N_POOLS *
+                                                           sizeof(jl_taggedvalue_t **));
+
+    // update metadata of pages that were pointed to by freelist or newpages from a pool
+    // i.e. pages being the current allocation target
+    for (int t_i = 0; t_i < n_threads; t_i++) {
+        jl_ptls_t ptls2 = jl_all_tls_states[t_i];
+        for (int i = 0; i < JL_GC_N_POOLS; i++) {
+            jl_gc_pool_t *p = &ptls2->heap.norm_pools[i];
+            jl_taggedvalue_t *last = p->freelist;
+            if (last) {
+                jl_gc_pagemeta_t *pg = jl_assume(page_metadata(last));
+                gc_pool_sync_nfree(pg, last);
+                pg->has_young = 1;
+            }
+            p->freelist = NULL;
+            pfl[t_i * JL_GC_N_POOLS + i] = &p->freelist;
+
+            last = p->newpages;
+            if (last) {
+                char *last_p = (char *)last;
+                jl_gc_pagemeta_t *pg = jl_assume(page_metadata(last_p - 1));
+                assert(last_p - gc_page_data(last_p - 1) >= GC_PAGE_OFFSET);
+                pg->nfree = (GC_PAGE_SZ - (last_p - gc_page_data(last_p - 1))) / p->osize;
+                pg->has_young = 1;
+            }
+            p->newpages = NULL;
+        }
+    }
+
+    // the actual sweeping
+    sweep_pool_pagetable(pfl, sweep_full);
+
+    // null out terminal pointers of free lists
+    for (int t_i = 0; t_i < n_threads; t_i++) {
+        for (int i = 0; i < JL_GC_N_POOLS; i++) {
+            *pfl[t_i * JL_GC_N_POOLS + i] = NULL;
+        }
+    }
+
+    gc_time_pool_end(sweep_full);
+}
+
 #ifdef __cplusplus
 }
 #endif

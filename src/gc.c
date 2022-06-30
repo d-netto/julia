@@ -209,8 +209,8 @@ int64_t t_start = 0; // Time GC starts;
 static int64_t last_trim_maxrss = 0;
 #endif
 
-static void gc_sync_cache_nolock(jl_ptls_t ptls,
-                                 jl_gc_mark_cache_t *gc_cache) JL_NOTSAFEPOINT
+STATIC_INLINE void gc_sync_cache_nolock(jl_ptls_t ptls,
+                                        jl_gc_mark_cache_t *gc_cache) JL_NOTSAFEPOINT
 {
     const int nbig = gc_cache->nbig_obj;
     for (int i = 0; i < nbig; i++) {
@@ -240,7 +240,7 @@ void gc_sync_cache(jl_ptls_t ptls) JL_NOTSAFEPOINT
 }
 
 // No other threads can be running marking at the same time
-static void gc_sync_all_caches_nolock(jl_ptls_t ptls)
+STATIC_INLINE void gc_sync_all_caches_nolock(jl_ptls_t ptls)
 {
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
@@ -258,7 +258,13 @@ JL_DLLEXPORT jl_weakref_t *jl_gc_new_weakref_th(jl_ptls_t ptls, jl_value_t *valu
     return wr;
 }
 
-static void clear_weak_refs(void)
+JL_DLLEXPORT jl_weakref_t *jl_gc_new_weakref(jl_value_t *value)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    return jl_gc_new_weakref_th(ptls, value);
+}
+
+STATIC_INLINE void gc_clear_weak_refs(void)
 {
     for (int i = 0; i < jl_n_threads; i++) {
         jl_ptls_t ptls2 = jl_all_tls_states[i];
@@ -440,77 +446,6 @@ int jl_gc_classify_pools(size_t sz, int *osize)
 
 int64_t lazy_freed_pages = 0;
 
-static void gc_pool_sync_nfree(jl_gc_pagemeta_t *pg, jl_taggedvalue_t *last) JL_NOTSAFEPOINT
-{
-    assert(pg->fl_begin_offset != (uint16_t)-1);
-    char *cur_pg = gc_page_data(last);
-    // Fast path for page that has no allocation
-    jl_taggedvalue_t *fl_beg = (jl_taggedvalue_t *)(cur_pg + pg->fl_begin_offset);
-    if (last == fl_beg)
-        return;
-    int nfree = 0;
-    do {
-        nfree++;
-        last = last->next;
-    } while (gc_page_data(last) == cur_pg);
-    pg->nfree = nfree;
-}
-
-// setup the data-structures for a sweep over all memory pools
-static void gc_sweep_pool(int sweep_full)
-{
-    gc_time_pool_start();
-    lazy_freed_pages = 0;
-
-    // For the benfit of the analyzer, which doesn't know that jl_n_threads
-    // doesn't change over the course of this function
-    size_t n_threads = jl_n_threads;
-
-    // allocate enough space to hold the end of the free list chain
-    // for every thread and pool size
-    jl_taggedvalue_t ***pfl = (jl_taggedvalue_t ***)alloca(n_threads * JL_GC_N_POOLS *
-                                                           sizeof(jl_taggedvalue_t **));
-
-    // update metadata of pages that were pointed to by freelist or newpages from a pool
-    // i.e. pages being the current allocation target
-    for (int t_i = 0; t_i < n_threads; t_i++) {
-        jl_ptls_t ptls2 = jl_all_tls_states[t_i];
-        for (int i = 0; i < JL_GC_N_POOLS; i++) {
-            jl_gc_pool_t *p = &ptls2->heap.norm_pools[i];
-            jl_taggedvalue_t *last = p->freelist;
-            if (last) {
-                jl_gc_pagemeta_t *pg = jl_assume(page_metadata(last));
-                gc_pool_sync_nfree(pg, last);
-                pg->has_young = 1;
-            }
-            p->freelist = NULL;
-            pfl[t_i * JL_GC_N_POOLS + i] = &p->freelist;
-
-            last = p->newpages;
-            if (last) {
-                char *last_p = (char *)last;
-                jl_gc_pagemeta_t *pg = jl_assume(page_metadata(last_p - 1));
-                assert(last_p - gc_page_data(last_p - 1) >= GC_PAGE_OFFSET);
-                pg->nfree = (GC_PAGE_SZ - (last_p - gc_page_data(last_p - 1))) / p->osize;
-                pg->has_young = 1;
-            }
-            p->newpages = NULL;
-        }
-    }
-
-    // the actual sweeping
-    sweep_pool_pagetable(pfl, sweep_full);
-
-    // null out terminal pointers of free lists
-    for (int t_i = 0; t_i < n_threads; t_i++) {
-        for (int i = 0; i < JL_GC_N_POOLS; i++) {
-            *pfl[t_i * JL_GC_N_POOLS + i] = NULL;
-        }
-    }
-
-    gc_time_pool_end(sweep_full);
-}
-
 static void gc_sweep_perm_alloc(void)
 {
     uint64_t t0 = jl_hrtime();
@@ -656,7 +591,7 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 
     int64_t actual_allocd = gc_num.since_sweep;
     // 4. check for objects to finalize
-    clear_weak_refs();
+    gc_clear_weak_refs();
     // Record the length of the marked list since we need to
     // mark the object moved to the marked list from the
     // `finalizer_list` by `sweep_finalizer_list`
@@ -860,7 +795,7 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     if (pause > gc_num.max_pause) {
         gc_num.max_pause = pause;
     }
-    reset_thread_gc_counts();
+    gc_reset_thread_counts();
 
     return recollect;
 }
@@ -1036,12 +971,6 @@ void jl_gc_set_max_memory(uint64_t max_mem)
 JL_DLLEXPORT void jl_throw_out_of_memory_error(void)
 {
     jl_throw(jl_memory_exception);
-}
-
-JL_DLLEXPORT jl_weakref_t *jl_gc_new_weakref(jl_value_t *value)
-{
-    jl_ptls_t ptls = jl_current_task->ptls;
-    return jl_gc_new_weakref_th(ptls, value);
 }
 
 JL_DLLEXPORT int jl_gc_enable_conservative_gc_support(void)

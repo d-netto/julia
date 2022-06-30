@@ -27,7 +27,7 @@ void gc_combine_thread_counts(jl_gc_num_t *dest) JL_NOTSAFEPOINT
     }
 }
 
-void reset_thread_gc_counts(void) JL_NOTSAFEPOINT
+void gc_reset_thread_counts(void) JL_NOTSAFEPOINT
 {
     for (int i = 0; i < jl_n_threads; i++) {
         jl_ptls_t ptls = jl_all_tls_states[i];
@@ -44,7 +44,7 @@ void jl_gc_reset_alloc_count(void) JL_NOTSAFEPOINT
     live_bytes += (gc_num.deferred_alloc + gc_num.allocd);
     gc_num.allocd = 0;
     gc_num.deferred_alloc = 0;
-    reset_thread_gc_counts();
+    gc_reset_thread_counts();
 }
 
 void jl_gc_count_allocd(size_t sz) JL_NOTSAFEPOINT
