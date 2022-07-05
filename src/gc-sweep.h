@@ -9,6 +9,9 @@
 extern "C" {
 #endif
 
+#define PROMOTE_AGE 1
+#define inc_sat(v, s) v = (v) >= s ? s : (v) + 1
+
 // GC knobs and self-measurement variables
 extern int64_t last_gc_total_bytes;
 

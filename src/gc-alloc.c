@@ -244,7 +244,9 @@ jl_value_t *jl_gc_realloc_string(jl_value_t *s, size_t sz)
     // old pointer.
     bigval_t *newbig = (bigval_t *)gc_managed_realloc_(ptls, hdr, allocsz, oldsz, 1, s, 0);
     newbig->sz = allocsz;
-    newbig->age = 0;
+    // Big objects are allocated as old
+    newbig->age = PROMOTE_AGE;
+    v->bits.gc = GC_OLD;
     gc_big_object_link(newbig, &ptls->heap.big_objects);
     jl_value_t *snew = jl_valueof(&newbig->header);
     *(size_t *)snew = sz;
@@ -275,7 +277,9 @@ STATIC_INLINE jl_value_t *jl_gc_big_alloc_inner(jl_ptls_t ptls, size_t sz)
     memset(v, 0xee, allocsz);
 #endif
     v->sz = allocsz;
-    v->age = 0;
+    // Big objects are allocated as old
+    v->age = PROMOTE_AGE;
+    v->bits.gc = GC_OLD;
     gc_big_object_link(v, &ptls->heap.big_objects);
     return jl_valueof(&v->header);
 }
@@ -284,7 +288,6 @@ STATIC_INLINE jl_value_t *jl_gc_big_alloc_inner(jl_ptls_t ptls, size_t sz)
 JL_DLLEXPORT jl_value_t *jl_gc_big_alloc(jl_ptls_t ptls, size_t sz)
 {
     jl_value_t *val = jl_gc_big_alloc_inner(ptls, sz);
-
     maybe_record_alloc_to_profile(val, sz, jl_gc_unknown_type_tag);
     return val;
 }

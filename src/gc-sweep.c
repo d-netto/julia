@@ -13,9 +13,6 @@
 extern "C" {
 #endif
 
-#define PROMOTE_AGE 1
-#define inc_sat(v, s) v = (v) >= s ? s : (v) + 1
-
 // GC knobs and self-measurement variables
 int64_t last_gc_total_bytes = 0;
 #ifdef _P64
@@ -80,16 +77,8 @@ bigval_t **gc_sweep_big_list(int sweep_full, bigval_t **pv) JL_NOTSAFEPOINT
         int old_bits = bits;
         if (gc_marked(bits)) {
             pv = &v->next;
-            int age = v->age;
-            if (age >= PROMOTE_AGE || bits == GC_OLD_MARKED) {
-                if (sweep_full || bits == GC_MARKED) {
-                    bits = GC_OLD;
-                }
-            }
-            else {
-                inc_sat(age, PROMOTE_AGE);
-                v->age = age;
-                bits = GC_CLEAN;
+            if (sweep_full || bits == GC_MARKED) {
+                bits = GC_OLD;
             }
             v->bits.gc = bits;
         }
@@ -115,8 +104,9 @@ bigval_t **gc_sweep_big_list(int sweep_full, bigval_t **pv) JL_NOTSAFEPOINT
 void gc_sweep_big(jl_ptls_t ptls, int sweep_full) JL_NOTSAFEPOINT
 {
     gc_time_big_start();
-    for (int i = 0; i < jl_n_threads; i++)
+    for (int i = 0; i < jl_n_threads; i++) {
         gc_sweep_big_list(sweep_full, &jl_all_tls_states[i]->heap.big_objects);
+    }
     if (sweep_full) {
         bigval_t **last_next = gc_sweep_big_list(sweep_full, &big_objects_marked);
         // Move all survivors from big_objects_marked list to big_objects list.
