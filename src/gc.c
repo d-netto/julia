@@ -1,6 +1,7 @@
 // This file is a part of Julia. License is MIT: https://julialang.org/license
 
 #include "gc.h"
+#include "gc-markqueue.h"
 #include "julia_assert.h"
 #include "julia_gcext.h"
 #ifdef __GLIBC__
@@ -286,71 +287,67 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     int64_t last_perm_scanned_bytes = perm_scanned_bytes;
 
     // Main mark-loop
+    uint64_t start_mark_time = jl_hrtime();
+
+    JL_PROBE_GC_MARK_BEGIN();
     {
-        uint64_t start_mark_time = jl_hrtime();
-
-        JL_PROBE_GC_MARK_BEGIN();
-        {
-            jl_gc_markqueue_t *mq = &ptls->mark_queue;
-            // Fix GC bits of objects in the remset.
-            for (int t_i = 0; t_i < jl_n_threads; t_i++) {
-                gc_premark(jl_all_tls_states[t_i]);
-            }
-            for (int t_i = 0; t_i < jl_n_threads; t_i++) {
-                jl_ptls_t ptls2 = jl_all_tls_states[t_i];
-                // Mark every thread local root
-                gc_queue_thread_local(mq, ptls2);
-                // Mark any managed objects in the backtrace buffer
-                gc_queue_bt_buf(mq, ptls2);
-                // Mark every object in the `last_remsets` and `rem_binding`
-                gc_queue_remset(ptls, ptls2);
-            }
-            // Walk roots
-            gc_mark_roots(mq);
-            if (gc_cblist_root_scanner) {
-                gc_invoke_callbacks(jl_gc_cb_root_scanner_t, gc_cblist_root_scanner,
-                                    (collection));
-            }
-            gc_mark_loop(ptls);
+        jl_gc_markqueue_t *mq = &ptls->mark_queue;
+        // Fix GC bits of objects in the remset.
+        for (int t_i = 0; t_i < jl_n_threads; t_i++) {
+            gc_premark(jl_all_tls_states[t_i]);
         }
-        JL_PROBE_GC_MARK_END(scanned_bytes, perm_scanned_bytes);
-
-        gc_settime_premark_end();
-        gc_time_mark_pause(gc_start_time, scanned_bytes, perm_scanned_bytes);
-
-        uint64_t end_mark_time = jl_hrtime();
-        uint64_t mark_time = end_mark_time - start_mark_time;
-        gc_num.since_sweep += gc_num.allocd;
-        gc_num.mark_time = mark_time;
-        gc_num.total_mark_time += mark_time;
+        for (int t_i = 0; t_i < jl_n_threads; t_i++) {
+            jl_ptls_t ptls2 = jl_all_tls_states[t_i];
+            // Mark every thread local root
+            gc_queue_thread_local(mq, ptls2);
+            // Mark any managed objects in the backtrace buffer
+            gc_queue_bt_buf(mq, ptls2);
+            // Mark every object in the `last_remsets` and `rem_binding`
+            gc_queue_remset(ptls, ptls2);
+        }
+        // Walk roots
+        gc_mark_roots(mq);
+        if (gc_cblist_root_scanner) {
+            gc_invoke_callbacks(jl_gc_cb_root_scanner_t, gc_cblist_root_scanner,
+                                (collection));
+        }
+        gc_mark_loop(ptls);
     }
+    JL_PROBE_GC_MARK_END(scanned_bytes, perm_scanned_bytes);
+
+    gc_settime_premark_end();
+    gc_time_mark_pause(gc_start_time, scanned_bytes, perm_scanned_bytes);
+
+    uint64_t end_mark_time = jl_hrtime();
+    uint64_t mark_time = end_mark_time - start_mark_time;
+    gc_num.since_sweep += gc_num.allocd;
+    gc_num.mark_time = mark_time;
+    gc_num.total_mark_time += mark_time;
 
     int64_t actual_allocd = gc_num.since_sweep;
 
     // Check for objects to finalize
-    {
-        gc_clear_weak_refs();
-        // Record the length of the marked list since we need to
-        // mark the object moved to the marked list from the
-        // `finalizer_list` by `sweep_finalizer_list`
-        size_t orig_marked_len = finalizer_list_marked.len;
-        for (int i = 0; i < jl_n_threads; i++) {
-            jl_ptls_t ptls2 = jl_all_tls_states[i];
-            gc_sweep_finalizer_list(&ptls2->finalizers);
-        }
-        if (prev_sweep_full) {
-            gc_sweep_finalizer_list(&finalizer_list_marked);
-            orig_marked_len = 0;
-        }
-        for (int i = 0; i < jl_n_threads; i++) {
-            jl_ptls_t ptls2 = jl_all_tls_states[i];
-            gc_mark_finlist(ptls, &ptls2->finalizers, 0);
-        }
-        gc_mark_finlist(ptls, &finalizer_list_marked, orig_marked_len);
-        // "Flush" the mark stack before flipping the reset_age bit
-        // so that the objects are not incorrectly reset.
-        gc_mark_loop(ptls);
+    gc_clear_weak_refs();
+    // Record the length of the marked list since we need to
+    // mark the object moved to the marked list from the
+    // `finalizer_list` by `sweep_finalizer_list`
+    size_t orig_marked_len = finalizer_list_marked.len;
+    for (int i = 0; i < jl_n_threads; i++) {
+        jl_ptls_t ptls2 = jl_all_tls_states[i];
+        gc_sweep_finalizer_list(&ptls2->finalizers);
     }
+    if (prev_sweep_full) {
+        gc_sweep_finalizer_list(&finalizer_list_marked);
+        orig_marked_len = 0;
+    }
+    for (int i = 0; i < jl_n_threads; i++) {
+        jl_ptls_t ptls2 = jl_all_tls_states[i];
+        gc_mark_finlist(ptls, &ptls2->finalizers, 0);
+    }
+    gc_mark_finlist(ptls, &finalizer_list_marked, orig_marked_len);
+    // "Flush" the mark stack before flipping the reset_age bit
+    // so that the objects are not incorrectly reset.
+    gc_mark_loop(ptls);
 
     // Conservative marking relies on age to tell allocated objects
     // and freelist entries apart.
@@ -372,13 +369,11 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     int64_t estimate_freed = live_sz_ub - live_sz_est;
 
     // Verification and stats
-    {
-        gc_verify(ptls);
-        gc_stats_all_pool();
-        gc_stats_big_obj();
-        objprofile_printall();
-        objprofile_reset();
-    }
+    gc_verify(ptls);
+    gc_stats_all_pool();
+    gc_stats_big_obj();
+    objprofile_printall();
+    objprofile_reset();
 
     gc_num.total_allocd += gc_num.since_sweep;
     if (!prev_sweep_full)
@@ -440,29 +435,27 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     scanned_bytes = 0;
 
     // Sweeping
+    uint64_t start_sweep_time = jl_hrtime();
+
+    JL_PROBE_GC_SWEEP_BEGIN(sweep_full);
     {
-        uint64_t start_sweep_time = jl_hrtime();
-
-        JL_PROBE_GC_SWEEP_BEGIN(sweep_full);
-        {
-            gc_sweep_weak_refs();
-            gc_sweep_stack_pools();
-            gc_sweep_foreign_objs();
-            gc_sweep_other(ptls, sweep_full);
-            gc_scrub();
-            gc_verify_tags();
-            gc_sweep_pool(sweep_full);
-            if (sweep_full)
-                gc_sweep_perm_alloc();
-        }
-        JL_PROBE_GC_SWEEP_END();
-
-        uint64_t gc_end_time = jl_hrtime();
-        uint64_t sweep_time = gc_end_time - start_sweep_time;
-        pause = gc_end_time - gc_start_time;
-        gc_num.total_sweep_time += sweep_time;
-        gc_num.sweep_time = sweep_time;
+        gc_sweep_weak_refs();
+        gc_sweep_stack_pools();
+        gc_sweep_foreign_objs();
+        gc_sweep_other(ptls, sweep_full);
+        gc_scrub();
+        gc_verify_tags();
+        gc_sweep_pool(sweep_full);
+        if (sweep_full)
+            gc_sweep_perm_alloc();
     }
+    JL_PROBE_GC_SWEEP_END();
+
+    uint64_t gc_end_time = jl_hrtime();
+    uint64_t sweep_time = gc_end_time - start_sweep_time;
+    pause = gc_end_time - gc_start_time;
+    gc_num.total_sweep_time += sweep_time;
+    gc_num.sweep_time = sweep_time;
 
     // if it is a quick sweep, put back the remembered objects in queued state
     // so that we don't trigger the barrier again on them.

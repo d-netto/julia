@@ -902,6 +902,12 @@ JL_DLLEXPORT void jl_gc_use(jl_value_t *a);
 
 JL_DLLEXPORT void jl_clear_malloc_data(void);
 
+// Also defined in `julia_internal.h`
+#define GC_CLEAN  0 // freshly allocated
+#define GC_MARKED 1 // reachable and young
+#define GC_OLD    2 // if it is reachable it will be marked as old
+#define GC_OLD_MARKED (GC_OLD | GC_MARKED) // reachable and old
+
 // GC write barriers
 JL_DLLEXPORT void jl_gc_queue_root(const jl_value_t *root) JL_NOTSAFEPOINT;
 JL_DLLEXPORT void jl_gc_queue_multiroot(const jl_value_t *root, const jl_value_t *stored) JL_NOTSAFEPOINT;
@@ -909,15 +915,15 @@ JL_DLLEXPORT void jl_gc_queue_multiroot(const jl_value_t *root, const jl_value_t
 STATIC_INLINE void jl_gc_wb(const void *parent, const void *ptr) JL_NOTSAFEPOINT
 {
     // parent and ptr isa jl_value_t*
-    if (__unlikely(jl_astaggedvalue(parent)->bits.gc == 3 && // parent is old and not in remset
-                   (jl_astaggedvalue(ptr)->bits.gc & 1) == 0)) // ptr is young
+    if (__unlikely(jl_astaggedvalue(parent)->bits.gc == GC_OLD_MARKED && // parent is old and not in remset
+                   (jl_astaggedvalue(ptr)->bits.gc & GC_MARKED) == 0)) // ptr is young
         jl_gc_queue_root((jl_value_t*)parent);
 }
 
 STATIC_INLINE void jl_gc_wb_back(const void *ptr) JL_NOTSAFEPOINT // ptr isa jl_value_t*
 {
     // if ptr is old
-    if (__unlikely(jl_astaggedvalue(ptr)->bits.gc == 3)) {
+    if (__unlikely(jl_astaggedvalue(ptr)->bits.gc == GC_OLD_MARKED)) {
         jl_gc_queue_root((jl_value_t*)ptr);
     }
 }
@@ -925,9 +931,9 @@ STATIC_INLINE void jl_gc_wb_back(const void *ptr) JL_NOTSAFEPOINT // ptr isa jl_
 STATIC_INLINE void jl_gc_multi_wb(const void *parent, const jl_value_t *ptr) JL_NOTSAFEPOINT
 {
     // ptr is an immutable object
-    if (__likely(jl_astaggedvalue(parent)->bits.gc != 3))
+    if (__likely(jl_astaggedvalue(parent)->bits.gc != GC_OLD_MARKED))
         return; // parent is young or in remset
-    if (__likely(jl_astaggedvalue(ptr)->bits.gc == 3))
+    if (__likely(jl_astaggedvalue(ptr)->bits.gc == GC_OLD_MARKED))
         return; // ptr is old and not in remset (thus it does not point to young)
     jl_datatype_t *dt = (jl_datatype_t*)jl_typeof(ptr);
     const jl_datatype_layout_t *ly = dt->layout;

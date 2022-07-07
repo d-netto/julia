@@ -4,6 +4,7 @@
 #ifndef JL_THREADS_H
 #define JL_THREADS_H
 
+#include "gc-markqueue.h"
 #include "julia_atomics.h"
 #ifndef _OS_WINDOWS_
 #include "pthread.h"
@@ -13,7 +14,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
 
 JL_DLLEXPORT int16_t jl_threadid(void);
 JL_DLLEXPORT int8_t jl_threadpoolid(int16_t tid) JL_NOTSAFEPOINT;
@@ -168,16 +168,6 @@ typedef struct {
     arraylist_t free_stacks[JL_N_STACK_POOLS];
 } jl_thread_heap_t;
 
-// Cache of thread local change to global metadata during GC
-// This is sync'd after marking.
-typedef union _jl_gc_mark_data jl_gc_mark_data_t;
-
-typedef struct {
-    struct _jl_value_t **start;
-    struct _jl_value_t **current;
-    struct _jl_value_t **end;
-} jl_gc_markqueue_t;
-
 typedef struct {
     // thread local increment of `perm_scanned_bytes`
     size_t perm_scanned_bytes;
@@ -198,6 +188,13 @@ typedef struct {
 
 struct _jl_bt_element_t;
 
+// gc_state = 1 means the thread is doing GC or is waiting for the GC to
+//              finish.
+#define JL_GC_STATE_WAITING 1
+// gc_state = 2 means the thread is running unmanaged code that can be
+//              execute at the same time with the GC.
+#define JL_GC_STATE_SAFE 2
+
 // This includes all the thread local states we care about for a thread.
 // Changes to TLS field types must be reflected in codegen.
 #define JL_MAX_BT_SIZE 80000
@@ -208,12 +205,6 @@ typedef struct _jl_tls_states_t {
     volatile size_t *safepoint;
     _Atomic(int8_t) sleep_check_state; // read/write from foreign threads
     // Whether it is safe to execute GC at the same time.
-#define JL_GC_STATE_WAITING 1
-    // gc_state = 1 means the thread is doing GC or is waiting for the GC to
-    //              finish.
-#define JL_GC_STATE_SAFE 2
-    // gc_state = 2 means the thread is running unmanaged code that can be
-    //              execute at the same time with the GC.
     _Atomic(int8_t) gc_state; // read from foreign threads
     // execution of certain certain impure
     // statements is prohibited from certain
