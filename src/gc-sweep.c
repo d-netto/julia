@@ -80,15 +80,12 @@ bigval_t **gc_sweep_big_list(int sweep_full, bigval_t **pv) JL_NOTSAFEPOINT
         int old_bits = bits;
         if (gc_marked(bits)) {
             pv = &v->next;
-            int age = v->age;
             if (bits == GC_OLD_MARKED) {
-                if (sweep_full || bits == GC_MARKED) {
+                if (sweep_full) {
                     bits = GC_OLD;
                 }
             }
             else {
-                inc_sat(age, PROMOTE_AGE);
-                v->age = age;
                 bits = GC_CLEAN;
             }
             v->bits.gc = bits;
