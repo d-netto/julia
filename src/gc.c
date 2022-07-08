@@ -103,46 +103,6 @@ extern int64_t last_gc_total_bytes;
 // are not reachable from anywhere else.
 int mark_reset_age = 0;
 
-/*
- * The state transition looks like :
- *
- * ([(quick)sweep] means either a sweep or a quicksweep)
- *
- * <-[(quick)sweep]-
- *                 |
- *     ---->  GC_OLD  <--[(quick)sweep && age>promotion]--
- *     |     |                                           |
- *     |     |  GC_MARKED (in remset)                    |
- *     |     |     ^            |                        |
- *     |   [mark]  |          [mark]                     |
- *     |     |     |            |                        |
- *     |     |     |            |                        |
- *  [sweep]  | [write barrier]  |                        |
- *     |     v     |            v                        |
- *     ----- GC_OLD_MARKED <----                         |
- *              |               ^                        |
- *              |               |                        |
- *              --[quicksweep]---                        |
- *                                                       |
- *  ========= above this line objects are old =========  |
- *                                                       |
- *  ----[new]------> GC_CLEAN ------[mark]-----------> GC_MARKED
- *                    |    ^                                   |
- *  <-[(quick)sweep]---    |                                   |
- *                         --[(quick)sweep && age<=promotion]---
- */
-
-// A quick sweep is a sweep where `!sweep_full`
-// It means we won't touch GC_OLD_MARKED objects (old gen).
-
-// When a reachable object has survived more than PROMOTE_AGE+1 collections
-// it is tagged with GC_OLD during sweep and will be promoted on next mark
-// because at that point we can know easily if it references young objects.
-// Marked old objects that reference young ones are kept in the remset.
-
-// When a write barrier triggers, the offending marked object is both queued,
-// so as not to trigger the barrier again, and put in the remset.
-
 int64_t scanned_bytes; // young bytes scanned while marking
 int64_t perm_scanned_bytes; // old bytes scanned while marking
 

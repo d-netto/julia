@@ -902,11 +902,12 @@ JL_DLLEXPORT void jl_gc_use(jl_value_t *a);
 
 JL_DLLEXPORT void jl_clear_malloc_data(void);
 
-// Also defined in `julia_internal.h`
+// Must be kept in sync with those in `julia_internal.h`
 #define GC_CLEAN  0 // freshly allocated
 #define GC_MARKED 1 // reachable and young
 #define GC_OLD    2 // if it is reachable it will be marked as old
 #define GC_OLD_MARKED (GC_OLD | GC_MARKED) // reachable and old
+#define GC_MASK 3
 
 // GC write barriers
 JL_DLLEXPORT void jl_gc_queue_root(const jl_value_t *root) JL_NOTSAFEPOINT;

@@ -269,7 +269,7 @@ STATIC_INLINE int gc_old(uintptr_t bits) JL_NOTSAFEPOINT
 
 STATIC_INLINE uintptr_t gc_set_bits(uintptr_t tag, int bits) JL_NOTSAFEPOINT
 {
-    return (tag & ~(uintptr_t)3) | bits;
+    return (tag & ~(uintptr_t)GC_MASK) | bits;
 }
 
 STATIC_INLINE uintptr_t gc_ptr_tag(void *v, uintptr_t mask) JL_NOTSAFEPOINT
