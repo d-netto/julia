@@ -119,13 +119,14 @@ STATIC_INLINE void gc_setmark_big(jl_ptls_t ptls, jl_taggedvalue_t *o,
     assert(!page_metadata(o));
     bigval_t *hdr = bigval_header(o);
     if (mark_mode == GC_OLD_MARKED) {
-        ptls->gc_cache.perm_scanned_bytes += hdr->sz & ~3;
+        ptls->gc_cache.perm_scanned_bytes += hdr->sz & ~GC_MASK;
         gc_queue_big_marked(ptls, hdr, 0);
     }
     else {
-        ptls->gc_cache.scanned_bytes += hdr->sz & ~3;
+        ptls->gc_cache.scanned_bytes += hdr->sz & ~GC_MASK;
     }
-    objprofile_count(jl_typeof(jl_valueof(o)), mark_mode == GC_OLD_MARKED, hdr->sz & ~3);
+    objprofile_count(jl_typeof(jl_valueof(o)), mark_mode == GC_OLD_MARKED,
+                     hdr->sz & ~GC_MASK);
 }
 
 // This function should be called exactly once during marking for each pool

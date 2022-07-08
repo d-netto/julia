@@ -97,12 +97,6 @@ extern int64_t last_gc_total_bytes;
 
 // global variables for GC stats
 
-// Resetting the object to a young object, this is used when marking the
-// finalizer list to collect them the next time because the object is very
-// likely dead. This also won't break the GC invariance since these objects
-// are not reachable from anywhere else.
-int mark_reset_age = 0;
-
 int64_t scanned_bytes; // young bytes scanned while marking
 int64_t perm_scanned_bytes; // old bytes scanned while marking
 
@@ -305,20 +299,8 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         gc_mark_finlist(ptls, &ptls2->finalizers, 0);
     }
     gc_mark_finlist(ptls, &finalizer_list_marked, orig_marked_len);
-    // "Flush" the mark stack before flipping the reset_age bit
-    // so that the objects are not incorrectly reset.
-    gc_mark_loop(ptls);
-
-    // Conservative marking relies on age to tell allocated objects
-    // and freelist entries apart.
-    mark_reset_age = 0;
-    // Reset the age and old bit for any unmarked objects referenced by the
-    // `to_finalize` list. These objects are only reachable from this list
-    // and should not be referenced by any old objects so this won't break
-    // the GC invariant.
     gc_mark_finlist(ptls, &to_finalize, 0);
     gc_mark_loop(ptls);
-    mark_reset_age = 0;
     gc_settime_postmark_end();
 
     // Flush everything in mark cache
@@ -340,33 +322,28 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         promoted_bytes += perm_scanned_bytes - last_perm_scanned_bytes;
 
     // Next collection decision
-    int large_frontier;
-    int sweep_full;
-    int recollect;
-    {
-        int not_freed_enough =
-            (collection == JL_GC_AUTO) && estimate_freed < (7 * (actual_allocd / 10));
-        int nptr = 0;
-        for (int i = 0; i < jl_n_threads; i++) {
-            nptr += jl_all_tls_states[i]->heap.remset_nptr;
-        }
-        // many pointers in the intergen frontier => "quick" mark is not quick
-        large_frontier = nptr * sizeof(void *) >= default_collect_interval;
-        sweep_full = 0;
-        recollect = 0;
+    int not_freed_enough =
+        (collection == JL_GC_AUTO) && estimate_freed < (7 * (actual_allocd / 10));
+    int nptr = 0;
+    for (int i = 0; i < jl_n_threads; i++) {
+        nptr += jl_all_tls_states[i]->heap.remset_nptr;
+    }
+    // many pointers in the intergen frontier => "quick" mark is not quick
+    int large_frontier = nptr * sizeof(void *) >= default_collect_interval;
+    int sweep_full = 0;
+    int recollect = 0;
 
-        // update heuristics only if this GC was automatically triggered
-        if (collection == JL_GC_AUTO) {
-            if (not_freed_enough) {
-                gc_num.interval = gc_num.interval * 2;
-            }
-            if (large_frontier) {
-                sweep_full = 1;
-            }
-            if (gc_num.interval > max_collect_interval) {
-                sweep_full = 1;
-                gc_num.interval = max_collect_interval;
-            }
+    // update heuristics only if this GC was automatically triggered
+    if (collection == JL_GC_AUTO) {
+        if (not_freed_enough) {
+            gc_num.interval = gc_num.interval * 2;
+        }
+        if (large_frontier) {
+            sweep_full = 1;
+        }
+        if (gc_num.interval > max_collect_interval) {
+            sweep_full = 1;
+            gc_num.interval = max_collect_interval;
         }
     }
 
