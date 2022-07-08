@@ -105,7 +105,7 @@ STATIC_INLINE int gc_try_setmark_tag(jl_taggedvalue_t *o, uint8_t mark_mode) JL_
     if (gc_old(tag))
         mark_mode = GC_OLD_MARKED;
     tag = tag | mark_mode;
-    assert((tag & 0x3) == mark_mode);
+    assert((tag & GC_MASK) == mark_mode);
     tag = jl_atomic_exchange_relaxed((_Atomic(uintptr_t) *)&o->header, tag);
     verify_val(jl_valueof(o));
     return !gc_marked(tag);
@@ -258,7 +258,7 @@ JL_NORETURN NOINLINE void gc_assert_datatype_fail(jl_ptls_t ptls, jl_datatype_t 
 STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
                                        uintptr_t nptr) JL_NOTSAFEPOINT
 {
-    if (__unlikely((nptr & 0x3) == 0x3)) {
+    if (__unlikely((nptr & GC_OLD_MARKED) == GC_OLD_MARKED)) {
         ptls->heap.remset_nptr += nptr >> 2;
         arraylist_t *remset = ptls->heap.remset;
         size_t len = remset->len;
