@@ -13,7 +13,6 @@
 extern "C" {
 #endif
 
-extern int mark_reset_age;
 extern void gc_sync_cache(jl_ptls_t ptls) JL_NOTSAFEPOINT;
 
 uv_mutex_t gc_cache_lock;
@@ -103,17 +102,10 @@ STATIC_INLINE int gc_try_setmark_tag(jl_taggedvalue_t *o, uint8_t mark_mode) JL_
     uintptr_t tag = o->header;
     if (gc_marked(tag))
         return 0;
-    if (mark_reset_age) {
-        // Reset the object as if it was just allocated
-        mark_mode = GC_MARKED;
-        tag = gc_set_bits(tag, mark_mode);
-    }
-    else {
-        if (gc_old(tag))
-            mark_mode = GC_OLD_MARKED;
-        tag = tag | mark_mode;
-        assert((tag & 0x3) == mark_mode);
-    }
+    if (gc_old(tag))
+        mark_mode = GC_OLD_MARKED;
+    tag = tag | mark_mode;
+    assert((tag & 0x3) == mark_mode);
     tag = jl_atomic_exchange_relaxed((_Atomic(uintptr_t) *)&o->header, tag);
     verify_val(jl_valueof(o));
     return !gc_marked(tag);
@@ -132,14 +124,6 @@ STATIC_INLINE void gc_setmark_big(jl_ptls_t ptls, jl_taggedvalue_t *o,
     }
     else {
         ptls->gc_cache.scanned_bytes += hdr->sz & ~3;
-        // We can't easily tell if the object is old or being promoted
-        // from the gc bits but if the `age` is `0` then the object
-        // must be already on a young list.
-        if (mark_reset_age && hdr->age) {
-            // Reset the object as if it was just allocated
-            hdr->age = 0;
-            gc_queue_big_marked(ptls, hdr, 1);
-        }
     }
     objprofile_count(jl_typeof(jl_valueof(o)), mark_mode == GC_OLD_MARKED, hdr->sz & ~3);
 }
@@ -160,13 +144,6 @@ STATIC_INLINE void gc_setmark_pool_(jl_ptls_t ptls, jl_taggedvalue_t *o, uint8_t
     }
     else {
         ptls->gc_cache.scanned_bytes += page->osize;
-        if (mark_reset_age) {
-            page->has_young = 1;
-            char *page_begin = gc_page_data(o) + GC_PAGE_OFFSET;
-            int obj_id = (((char *)o) - page_begin) / page->osize;
-            uint8_t *ages = page->ages + obj_id / 8;
-            jl_atomic_fetch_and_relaxed((_Atomic(uint8_t) *)ages, ~(1 << (obj_id % 8)));
-        }
     }
     objprofile_count(jl_typeof(jl_valueof(o)), mark_mode == GC_OLD_MARKED, page->osize);
     page->has_marked = 1;
@@ -194,8 +171,7 @@ STATIC_INLINE void gc_setmark_buf_(jl_ptls_t ptls, void *o, uint8_t mark_mode,
                                    size_t minsz) JL_NOTSAFEPOINT
 {
     jl_taggedvalue_t *buf = jl_astaggedvalue(o);
-    uint8_t bits = (gc_old(buf->header) && !mark_reset_age) ? GC_OLD_MARKED : GC_MARKED;
-    ;
+    uint8_t bits = gc_old(buf->header) ? GC_OLD_MARKED : GC_MARKED;
     // If the object is larger than the max pool size it can't be a pool object.
     // This should be accurate most of the time but there might be corner cases
     // where the size estimate is a little off so we do a pool lookup to make
@@ -580,7 +556,7 @@ NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_upda
 #endif
     jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
     jl_datatype_t *vt = (jl_datatype_t *)(o->header & ~(uintptr_t)0xf);
-    uint8_t bits = (gc_old(o->header) && !mark_reset_age) ? GC_OLD_MARKED : GC_MARKED;
+    uint8_t bits = gc_old(o->header) ? GC_OLD_MARKED : GC_MARKED;
     int update_meta = __likely(!meta_updated && !gc_verifying);
     int foreign_alloc = 0;
     if (update_meta && (void *)o >= sysimg_base && (void *)o < sysimg_end) {
