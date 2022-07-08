@@ -30,7 +30,7 @@ JL_DLLEXPORT void jl_gc_queue_root(const jl_value_t *ptr)
     // write GC_OLD to the GC bits outside GC. This could cause
     // duplicated objects in the remset but that shouldn't be a problem.
     o->bits.gc = GC_MARKED;
-    arraylist_push(ptls->heap.remset, (jl_value_t *)ptr);
+    arraylist_push(&ptls->heap.remset, (jl_value_t *)ptr);
     ptls->heap.remset_nptr++; // conservative
 }
 
@@ -260,7 +260,7 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
 {
     if (__unlikely((nptr & GC_OLD_MARKED) == GC_OLD_MARKED)) {
         ptls->heap.remset_nptr += nptr >> 2;
-        arraylist_t *remset = ptls->heap.remset;
+        arraylist_t *remset = &ptls->heap.remset;
         size_t len = remset->len;
         if (__unlikely(len >= remset->max)) {
             arraylist_push(remset, obj);
@@ -805,11 +805,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
 
 void gc_premark(jl_ptls_t ptls2)
 {
-    arraylist_t *remset = ptls2->heap.remset;
-    ptls2->heap.remset = ptls2->heap.last_remset;
-    ptls2->heap.last_remset = remset;
-    ptls2->heap.remset->len = 0;
-    ptls2->heap.remset_nptr = 0;
+    arraylist_t *remset = &ptls2->heap.remset;
     // Avoid counting remembered objects & bindings twice
     // in `perm_scanned_bytes`
     size_t len = remset->len;
@@ -852,8 +848,8 @@ void gc_queue_bt_buf(jl_gc_markqueue_t *mq, jl_ptls_t ptls2)
 
 void gc_queue_remset(jl_ptls_t ptls, jl_ptls_t ptls2)
 {
-    size_t len = ptls2->heap.last_remset->len;
-    void **items = ptls2->heap.last_remset->items;
+    size_t len = ptls2->heap.remset.len;
+    void **items = ptls2->heap.remset.items;
     for (size_t i = 0; i < len; i++) {
         // Objects in the `remset` are already marked,
         // so a `gc_try_claim_and_push` wouldn't work here

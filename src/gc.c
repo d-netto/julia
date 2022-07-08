@@ -422,8 +422,8 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     for (int t_i = 0; t_i < jl_n_threads; t_i++) {
         jl_ptls_t ptls2 = jl_all_tls_states[t_i];
         if (!sweep_full) {
-            for (int i = 0; i < ptls2->heap.remset->len; i++) {
-                jl_astaggedvalue(ptls2->heap.remset->items[i])->bits.gc = GC_MARKED;
+            for (int i = 0; i < ptls2->heap.remset.len; i++) {
+                jl_astaggedvalue(ptls2->heap.remset.items[i])->bits.gc = GC_MARKED;
             }
             for (int i = 0; i < ptls2->heap.rem_bindings.len; i++) {
                 void *ptr = ptls2->heap.rem_bindings.items[i];
@@ -431,7 +431,7 @@ int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
             }
         }
         else {
-            ptls2->heap.remset->len = 0;
+            ptls2->heap.remset.len = 0;
             ptls2->heap.rem_bindings.len = 0;
         }
     }
@@ -612,10 +612,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     heap->mafreelist = NULL;
     heap->big_objects = NULL;
     arraylist_new(&heap->rem_bindings, 0);
-    heap->remset = &heap->_remset[0];
-    heap->last_remset = &heap->_remset[1];
-    arraylist_new(heap->remset, 0);
-    arraylist_new(heap->last_remset, 0);
+    arraylist_new(&heap->remset, 0);
     arraylist_new(&ptls->finalizers, 0);
     arraylist_new(&ptls->sweep_objs, 0);
 
@@ -623,10 +620,9 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     gc_cache->perm_scanned_bytes = 0;
     gc_cache->scanned_bytes = 0;
     gc_cache->nbig_obj = 0;
+
     size_t init_size = 1024;
-
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
-
     mq->current = mq->start = (jl_value_t **)malloc_s(init_size * sizeof(jl_value_t *));
     mq->end = mq->start + init_size;
 

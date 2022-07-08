@@ -147,12 +147,10 @@ typedef struct {
     struct _bigval_t *big_objects;
 
     // variables for tracking "remembered set"
+    arraylist_t remset;
     arraylist_t rem_bindings;
-    arraylist_t _remset[2]; // contains jl_value_t*
     // lower bound of the number of pointers inside remembered values
     int remset_nptr;
-    arraylist_t *remset;
-    arraylist_t *last_remset;
 
     // variables for allocating objects from pools
 #ifdef _P64
