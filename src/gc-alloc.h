@@ -143,63 +143,7 @@ JL_DLLEXPORT jl_value_t *(jl_gc_alloc)(jl_ptls_t ptls, size_t sz, void *ty);
 jl_taggedvalue_t *gc_reset_page(const jl_gc_pool_t *p, jl_gc_pagemeta_t *pg,
                                 jl_taggedvalue_t *fl) JL_NOTSAFEPOINT;
 NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT;
-
-// Size includes the tag and the tag is not cleared!!
-STATIC_INLINE jl_value_t *jl_gc_pool_alloc_inner(jl_ptls_t ptls, int pool_offset, int osize)
-{
-    // Use the pool offset instead of the pool address as the argument
-    // to workaround a llvm bug.
-    // Ref https://llvm.org/bugs/show_bug.cgi?id=27190
-    jl_gc_pool_t *p = (jl_gc_pool_t *)((char *)ptls + pool_offset);
-    assert(jl_atomic_load_relaxed(&ptls->gc_state) == 0);
-#ifdef MEMDEBUG
-    return jl_gc_big_alloc(ptls, osize);
-#endif
-    maybe_collect(ptls);
-    jl_atomic_store_relaxed(&ptls->gc_num.allocd,
-                            jl_atomic_load_relaxed(&ptls->gc_num.allocd) + osize);
-    jl_atomic_store_relaxed(&ptls->gc_num.poolalloc,
-                            jl_atomic_load_relaxed(&ptls->gc_num.poolalloc) + 1);
-    // first try to use the freelist
-    jl_taggedvalue_t *v = p->freelist;
-    if (v) {
-        jl_taggedvalue_t *next = v->next;
-        p->freelist = next;
-        if (__unlikely(gc_page_data(v) != gc_page_data(next))) {
-            // we only update pg's fields when the freelist changes page
-            // since pg's metadata is likely not in cache
-            jl_gc_pagemeta_t *pg = jl_assume(page_metadata(v));
-            assert(pg->osize == p->osize);
-            pg->nfree = 0;
-            pg->has_young = 1;
-        }
-        return jl_valueof(v);
-    }
-    // if the freelist is empty we reuse empty but not freed pages
-    v = p->newpages;
-    jl_taggedvalue_t *next = (jl_taggedvalue_t *)((char *)v + osize);
-    // If there's no pages left or the current page is used up,
-    // we need to use the slow path.
-    char *cur_page = gc_page_data((char *)v - 1);
-    if (__unlikely(!v || cur_page + GC_PAGE_SZ < (char *)next)) {
-        if (v) {
-            // like the freelist case,
-            // but only update the page metadata when it is full
-            jl_gc_pagemeta_t *pg = jl_assume(page_metadata((char *)v - 1));
-            assert(pg->osize == p->osize);
-            pg->nfree = 0;
-            pg->has_young = 1;
-            v = *(jl_taggedvalue_t **)cur_page;
-        }
-        // Not an else!!
-        if (!v)
-            v = gc_add_page(p);
-        next = (jl_taggedvalue_t *)((char *)v + osize);
-    }
-    p->newpages = next;
-    return jl_valueof(v);
-}
-
+jl_value_t *jl_gc_pool_alloc_inner(jl_ptls_t ptls, int pool_offset, int osize);
 JL_DLLEXPORT jl_value_t *jl_gc_pool_alloc(jl_ptls_t ptls, int pool_offset, int osize);
 jl_value_t *jl_gc_pool_alloc_noinline(jl_ptls_t ptls, int pool_offset, int osize);
 int jl_gc_classify_pools(size_t sz, int *osize);
