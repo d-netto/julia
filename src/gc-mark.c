@@ -296,12 +296,12 @@ STATIC_INLINE void gc_mark_obj8(jl_ptls_t ptls, char *obj8_parent, uint8_t *obj8
     jl_value_t *new_obj;
     for (; obj8_begin < obj8_end; obj8_begin++) {
         new_obj = ((jl_value_t **)obj8_parent)[*obj8_begin];
-        if (new_obj)
+        if (new_obj) {
             verify_parent2("object", obj8_parent, &new_obj, "field(%d)",
                            gc_slot_to_fieldidx(obj8_parent, &new_obj));
-        gc_try_claim_and_push(mq, new_obj, &nptr);
+            gc_try_claim_and_push(mq, new_obj, &nptr);
+        }
     }
-    gc_mark_push_remset(ptls, (jl_value_t *)obj8_parent, nptr);
 }
 
 // Mark object with 16bit field descriptors
@@ -313,12 +313,12 @@ STATIC_INLINE void gc_mark_obj16(jl_ptls_t ptls, char *obj16_parent, uint16_t *o
     jl_value_t *new_obj;
     for (; obj16_begin < obj16_end; obj16_begin++) {
         new_obj = ((jl_value_t **)obj16_parent)[*obj16_begin];
-        if (new_obj)
+        if (new_obj) {
             verify_parent2("object", obj16_parent, &new_obj, "field(%d)",
                            gc_slot_to_fieldidx(obj16_parent, &new_obj));
-        gc_try_claim_and_push(mq, new_obj, &nptr);
+            gc_try_claim_and_push(mq, new_obj, &nptr);
+        }
     }
-    gc_mark_push_remset(ptls, (jl_value_t *)obj16_parent, nptr);
 }
 
 // Mark object with 32bit field descriptors
@@ -330,12 +330,12 @@ STATIC_INLINE void gc_mark_obj32(jl_ptls_t ptls, char *obj32_parent, uint32_t *o
     jl_value_t *new_obj;
     for (; obj32_begin < obj32_end; obj32_begin++) {
         new_obj = ((jl_value_t **)obj32_parent)[*obj32_begin];
-        if (new_obj)
+        if (new_obj) {
             verify_parent2("object", obj32_parent, &new_obj, "field(%d)",
                            gc_slot_to_fieldidx(obj32_parent, &new_obj));
-        gc_try_claim_and_push(mq, new_obj, &nptr);
+            gc_try_claim_and_push(mq, new_obj, &nptr);
+        }
     }
-    gc_mark_push_remset(ptls, (jl_value_t *)obj32_parent, nptr);
 }
 
 // Mark object array
@@ -347,10 +347,11 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent,
     jl_value_t *new_obj;
     for (; obj_begin < obj_end; obj_begin += step) {
         new_obj = *obj_begin;
-        if (new_obj)
+        if (new_obj) {
             verify_parent2("obj array", obj_parent, obj_begin, "elem(%d)",
                            gc_slot_to_arrayidx(obj_parent, obj_begin));
-        gc_try_claim_and_push(mq, new_obj, &nptr);
+            gc_try_claim_and_push(mq, new_obj, &nptr);
+        }
     }
     gc_mark_push_remset(ptls, obj_parent, nptr);
 }
@@ -367,13 +368,13 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent,
     for (; ary8_begin < ary8_end; ary8_begin += elsize) {
         for (uint8_t *pindex = elem_begin; pindex < elem_end; pindex++) {
             new_obj = ary8_begin[*pindex];
-            if (new_obj)
+            if (new_obj) {
                 verify_parent2("array", ary8_parent, &new_obj, "elem(%d)",
                                gc_slot_to_arrayidx(ary8_parent, ary8_begin));
-            gc_try_claim_and_push(mq, new_obj, &nptr);
+                gc_try_claim_and_push(mq, new_obj, &nptr);
+            }
         }
     }
-    gc_mark_push_remset(ptls, ary8_parent, nptr);
 }
 
 // Mark array with 16bit field descriptors
@@ -388,13 +389,13 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent,
     for (; ary16_begin < ary16_end; ary16_begin += elsize) {
         for (uint16_t *pindex = elem_begin; pindex < elem_end; pindex++) {
             new_obj = ary16_begin[*pindex];
-            if (new_obj)
+            if (new_obj) {
                 verify_parent2("array", ary16_parent, &new_obj, "elem(%d)",
                                gc_slot_to_arrayidx(ary16_parent, ary16_begin));
-            gc_try_claim_and_push(mq, new_obj, &nptr);
+                gc_try_claim_and_push(mq, new_obj, &nptr);
+            }
         }
     }
-    gc_mark_push_remset(ptls, ary16_parent, nptr);
 }
 
 // Mark gc frame
@@ -729,6 +730,7 @@ NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_upda
         // assume tasks always reference young objects: set lowest bit
         uintptr_t nptr = (npointers << 2) | 1 | bits;
         gc_mark_obj8(ptls, obj8_parent, obj8_begin, obj8_end, nptr);
+        gc_mark_push_remset(ptls, (jl_value_t *)obj8_parent, nptr);
     }
     else if (vt == jl_string_type) {
         size_t dtsz = jl_string_len(new_obj) + sizeof(size_t) + 1;
@@ -760,6 +762,7 @@ NOINLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_value_t *new_obj, int meta_upda
             uint8_t *obj8_end = obj8_begin + npointers;
             assert(obj8_begin < obj8_end);
             gc_mark_obj8(ptls, obj8_parent, obj8_begin, obj8_end, nptr);
+            gc_mark_push_remset(ptls, (jl_value_t *)obj8_parent, nptr | 1);
         }
         else if (layout->fielddesc_type == 1) {
             char *obj16_parent = (char *)new_obj;
