@@ -168,7 +168,7 @@ typedef struct {
     arraylist_t free_stacks[JL_N_STACK_POOLS];
 } jl_thread_heap_t;
 
-#define PREFETCH_MARK
+// #define PREFETCH_MARK
 
 #ifndef PREFETCH_MARK
 #define DFS_MARK
@@ -192,10 +192,10 @@ typedef struct {
 #endif
 
 typedef struct {
-#ifdef PREFETCH_MARK
+#if defined(PREFETCH_MARK)
     jl_gc_prefetch_buf_t prefetch_buf;
     jl_gc_markstack_t mark_stack;
-#elif DFS_MARK
+#elif defined(DFS_MARK)
     struct _jl_value_t **start;
     struct _jl_value_t **current;
     struct _jl_value_t **end;

@@ -2888,7 +2888,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     // Initialize GC mark-queue
     size_t init_size = (1 << 17);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
-#ifdef PREFETCH_MARK
+#if defined(PREFETCH_MARK)
     // Initialize prefetch buffer
     jl_gc_prefetch_buf_t *pf_buf = &mq->prefetch_buf;
     pf_buf->start = (jl_value_t **)malloc_s(PF_SIZE * sizeof(jl_value_t *));
@@ -2899,7 +2899,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     jl_gc_markstack_t *ms = &mq->mark_stack;
     ms->current = ms->start = (jl_value_t **)malloc_s(init_size * sizeof(jl_value_t *));
     ms->end = ms->start + init_size;
-#elif DFS_MARK
+#elif defined(DFS_MARK)
     mq->start = (jl_value_t **)malloc_s(init_size * sizeof(jl_value_t *));
     mq->current = mq->start;
     mq->end = mq->start + init_size;

@@ -84,7 +84,7 @@ typedef struct {
 // Double the mark queue
 static NOINLINE void gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
-#ifdef PREFETCH_MARK
+#if defined(PREFETCH_MARK)
     jl_gc_markstack_t *ms = &mq->mark_stack;
     jl_value_t **old_start = ms->start;
     size_t old_queue_size = (ms->end - ms->start);
@@ -92,7 +92,7 @@ static NOINLINE void gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
     ms->start = (jl_value_t**)realloc_s(old_start, 2 * old_queue_size * sizeof(jl_value_t*));
     ms->current = (ms->start + offset);
     ms->end = (ms->start + 2 * old_queue_size);
-#elif DFS_MARK
+#elif defined(DFS_MARK)
     jl_value_t **old_start = mq->start;
     size_t old_queue_size = (mq->end - mq->start);
     size_t offset = (mq->current - old_start);
@@ -119,7 +119,7 @@ static NOINLINE void gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq,
                                      jl_value_t *obj) JL_NOTSAFEPOINT
 {
-#ifdef PREFETCH_MARK
+#if defined(PREFETCH_MARK)
     jl_gc_prefetch_buf_t *pf_buf = &mq->prefetch_buf;
     jl_gc_markstack_t *ms = &mq->mark_stack;
     // Prefetch buffer overflowed: push to mark-stack
@@ -135,7 +135,7 @@ STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq,
         pf_buf->start[pf_buf->bottom % pf_buf->size] = obj;
         pf_buf->bottom++;
     }
-#elif DFS_MARK
+#elif defined(DFS_MARK)
     if (__unlikely(mq->current == mq->end))
         gc_markqueue_resize(mq);
     *mq->current = obj;
@@ -158,7 +158,7 @@ STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq,
 // Pop from the mark queue
 STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 {
-#ifdef PREFETCH_MARK
+#if defined(PREFETCH_MARK)
     jl_gc_prefetch_buf_t *pf_buf = &mq->prefetch_buf;
     jl_gc_markstack_t *ms = &mq->mark_stack;
     jl_value_t *obj = NULL;
@@ -183,7 +183,7 @@ STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
         }
     }
     return obj;
-#elif DFS_MARK
+#elif defined(DFS_MARK)
     if (mq->current == mq->start)
         return NULL;
     mq->current--;
