@@ -2888,8 +2888,14 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     // Initialize GC mark-queue
     size_t init_size = (1 << 17);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
-    mq->current = mq->start = (jl_value_t**)malloc_s(init_size * sizeof(jl_value_t*));
+    mq->start = (jl_value_t **)malloc_s(init_size * sizeof(jl_value_t *));
+#ifdef DFS_MARK
+    mq->current = mq->start;
     mq->end = mq->start + init_size;
+#else
+    mq->top = mq->bottom = 0;
+    mq->capacity = init_size;
+#endif
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     assert(gc_num.interval == default_collect_interval);

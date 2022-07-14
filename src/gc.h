@@ -82,8 +82,9 @@ typedef struct {
 } jl_gc_num_t;
 
 // Double the mark queue
-static NOINLINE void gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
+static void NOINLINE gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
+#ifdef DFS_MARK
     jl_value_t **old_start = mq->start;
     size_t old_queue_size = (mq->end - mq->start);
     size_t offset = (mq->current - old_start);
@@ -91,25 +92,49 @@ static NOINLINE void gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
         (jl_value_t **)realloc_s(old_start, 2 * old_queue_size * sizeof(jl_value_t *));
     mq->current = (mq->start + offset);
     mq->end = (mq->start + 2 * old_queue_size);
+#else
+    jl_value_t **old_start = mq->start;
+    size_t old_capacity = mq->capacity;
+    mq->start = (jl_value_t **)realloc_s(old_start, 2 * old_capacity * sizeof(jl_value_t *));
+    mq->capacity = 2 * old_capacity;
+#endif
 }
 
 // Push a work item to the queue
-STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
+STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, 
+                                     jl_value_t *obj) JL_NOTSAFEPOINT
 {
+#ifdef DFS_MARK
     if (__unlikely(mq->current == mq->end))
         gc_markqueue_resize(mq);
     *mq->current = obj;
     mq->current++;
+#else
+    // Mark-stack overflowed: resize it
+    if (__unlikely(mq->bottom - mq->top >= mq->capacity))
+        gc_markqueue_resize(mq);
+    mq->start[mq->bottom % mq->capacity] = obj;
+    mq->bottom++;
+#endif
 }
 
 // Pop from the mark queue
 STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 {
+    jl_value_t *obj = NULL;
+#ifdef DFS_MARK
     if (mq->current == mq->start)
-        return NULL;
+        return obj;
     mq->current--;
-    jl_value_t *obj = *mq->current;
+    obj = *mq->current;
     return obj;
+#else
+    if (mq->bottom - mq->top > 0) {
+        obj = mq->start[mq->top % mq->capacity];
+        mq->top++;
+    }
+    return obj;
+#endif
 }
 
 // layout for big (>2k) objects
