@@ -168,11 +168,7 @@ typedef struct {
     arraylist_t free_stacks[JL_N_STACK_POOLS];
 } jl_thread_heap_t;
 
-// #define DFS_MARK
-
-// Cache of thread local change to global metadata during GC
-// This is sync'd after marking.
-typedef union _jl_gc_mark_data jl_gc_mark_data_t;
+#define DFS_MARK
 
 typedef struct {
     struct _jl_value_t **start;

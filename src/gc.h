@@ -82,7 +82,7 @@ typedef struct {
 } jl_gc_num_t;
 
 // Double the mark queue
-static void NOINLINE gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
+static NOINLINE void gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
 #ifdef DFS_MARK
     jl_value_t **old_start = mq->start;
@@ -95,13 +95,17 @@ static void NOINLINE gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 #else
     jl_value_t **old_start = mq->start;
     size_t old_capacity = mq->capacity;
-    mq->start = (jl_value_t **)realloc_s(old_start, 2 * old_capacity * sizeof(jl_value_t *));
+    mq->start = (jl_value_t **)malloc(2 * old_capacity * sizeof(jl_value_t *));
+    // Copy elements into new buffer
+    for (size_t i = mq->top; i < mq->bottom; i++)
+        mq->start[i % (2 * old_capacity)] = old_start[i % old_capacity];
+    free(old_start);
     mq->capacity = 2 * old_capacity;
 #endif
 }
 
 // Push a work item to the queue
-STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, 
+STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq,
                                      jl_value_t *obj) JL_NOTSAFEPOINT
 {
 #ifdef DFS_MARK
@@ -121,18 +125,17 @@ STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq,
 // Pop from the mark queue
 STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 {
-    jl_value_t *obj = NULL;
 #ifdef DFS_MARK
     if (mq->current == mq->start)
-        return obj;
+        return NULL;
     mq->current--;
-    obj = *mq->current;
+    jl_value_t *obj = *mq->current;
     return obj;
 #else
-    if (mq->bottom - mq->top > 0) {
-        obj = mq->start[mq->top % mq->capacity];
-        mq->top++;
-    }
+    if (mq->bottom == mq->top)
+        return NULL;
+    jl_value_t *obj = mq->start[mq->top % mq->capacity];
+    mq->top++;
     return obj;
 #endif
 }
