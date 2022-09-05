@@ -191,9 +191,7 @@ void jl_spinmaster_notify_all(jl_ptls_t ptls) JL_NOTSAFEPOINT
         if (i == ptls->tid)
             continue;
         jl_ptls_t ptls2 = jl_all_tls_states[i];
-        uv_mutex_lock(&ptls2->gc_sleep_lock);
         uv_cond_signal(&ptls2->gc_wake_signal);
-        uv_mutex_unlock(&ptls2->gc_sleep_lock);
     }
 }
 
@@ -204,9 +202,7 @@ void jl_spinmaster_recruit_workers(jl_ptls_t ptls, size_t nworkers) JL_NOTSAFEPO
             continue;
         jl_ptls_t ptls2 = jl_all_tls_states[i];
         if (jl_atomic_load_acquire(&ptls2->gc_state) == JL_GC_STATE_WAITING) {
-            uv_mutex_lock(&ptls2->gc_sleep_lock);
             uv_cond_signal(&ptls2->gc_wake_signal);
-            uv_mutex_unlock(&ptls2->gc_sleep_lock);
             nworkers--;
         }
     }
