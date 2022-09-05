@@ -2542,8 +2542,8 @@ void gc_drain_all_queues(jl_ptls_t ptls, jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 
 // Main mark loop. A stack (allocated on the heap) of `jl_value_t *`
 // is used to keep track of processed items and a `chunk-stack` is used
-// to store suffixes of large arrays that need processing. 
-// Maintaning these stacks (instead of native one) 
+// to store suffixes of large arrays that need processing.
+// Maintaning these stacks (instead of native one)
 // avoids stack overflow when marking deep objects and
 // makes it easier to implement parallel marking via work-stealing
 void gc_mark_loop(jl_ptls_t ptls)
