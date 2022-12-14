@@ -1791,20 +1791,26 @@ STATIC_INLINE jl_value_t *gc_mark_obj8(jl_ptls_t ptls, char *obj8_parent, uint8_
 {
     (void)jl_assume(obj8_begin < obj8_end);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
+    jl_value_t **slot;
     jl_value_t *new_obj;
     for (; obj8_begin < obj8_end - 1; obj8_begin++) {
-        new_obj = ((jl_value_t **)obj8_parent)[*obj8_begin];
-        if (new_obj)
-            verify_parent2("object", obj8_parent, &new_obj, "field(%d)",
-                           gc_slot_to_fieldidx(obj8_parent, &new_obj));
-        gc_try_claim_and_push(mq, new_obj, &nptr);
+        slot = &((jl_value_t**)obj8_parent)[*obj8_begin];
+        new_obj = *slot;
+        if (new_obj != NULL) {
+            verify_parent2("object", obj8_parent, slot, "field(%d)",
+                            gc_slot_to_fieldidx(obj8_parent, slot, (jl_datatype_t*)jl_typeof(obj8_parent)));
+            gc_try_claim_and_push(mq, new_obj, &nptr);
+            gc_heap_snapshot_record_object_edge((jl_value_t*)obj8_parent, slot);
+        }
     }
     // Unroll last iteration to avoid pushing last element
     // and popping right away
-    new_obj = ((jl_value_t **)obj8_parent)[*(obj8_end - 1)];
-    if (new_obj) {
-        verify_parent2("object", obj8_parent, &new_obj, "field(%d)",
-                           gc_slot_to_fieldidx(obj8_parent, &new_obj));
+    slot = &((jl_value_t **)obj8_parent)[*(obj8_end - 1)];
+    new_obj = *slot;
+    if (new_obj != NULL) {        
+        verify_parent2("object", obj8_parent, slot, "field(%d)",
+                        gc_slot_to_fieldidx(obj8_parent, slot, (jl_datatype_t*)jl_typeof(obj8_parent)));
+        gc_heap_snapshot_record_object_edge((jl_value_t*)obj8_parent, slot);
         jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
         nptr |= !gc_old(o->header);
         if (!gc_try_setmark_tag(o, GC_MARKED)) new_obj = NULL;
@@ -1819,20 +1825,26 @@ STATIC_INLINE jl_value_t *gc_mark_obj16(jl_ptls_t ptls, char *obj16_parent, uint
 {
     (void)jl_assume(obj16_begin < obj16_end);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
+    jl_value_t **slot;
     jl_value_t *new_obj;
     for (; obj16_begin < obj16_end - 1; obj16_begin++) {
-        new_obj = ((jl_value_t **)obj16_parent)[*obj16_begin];
-        if (new_obj)
-            verify_parent2("object", obj16_parent, &new_obj, "field(%d)",
-                           gc_slot_to_fieldidx(obj16_parent, &new_obj));
-        gc_try_claim_and_push(mq, new_obj, &nptr);
+        slot = &((jl_value_t **)obj16_parent)[*obj16_begin];
+        new_obj = *slot;
+        if (new_obj != NULL) {
+            verify_parent2("object", obj16_parent, slot, "field(%d)",
+                            gc_slot_to_fieldidx(obj16_parent, slot, (jl_datatype_t*)jl_typeof(obj16_parent)));
+            gc_try_claim_and_push(mq, new_obj, &nptr);
+            gc_heap_snapshot_record_object_edge((jl_value_t*)obj16_parent, slot);
+        }
     }
     // Unroll last iteration to avoid pushing last element
     // and popping right away
-    new_obj = ((jl_value_t **)obj16_parent)[*(obj16_end - 1)];
-    if (new_obj) {
-        verify_parent2("object", obj16_parent, &new_obj, "field(%d)",
-                           gc_slot_to_fieldidx(obj16_parent, &new_obj));
+    slot = &((jl_value_t **)obj16_parent)[*(obj16_end - 1)];
+    new_obj = *slot;
+    if (new_obj != NULL) {
+        verify_parent2("object", obj16_parent, slot, "field(%d)",
+                        gc_slot_to_fieldidx(obj16_parent, slot, (jl_datatype_t*)jl_typeof(obj16_parent)));
+        gc_heap_snapshot_record_object_edge((jl_value_t*)obj16_parent, slot);
         jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
         nptr |= !gc_old(o->header);
         if (!gc_try_setmark_tag(o, GC_MARKED)) new_obj = NULL;
@@ -1847,20 +1859,26 @@ STATIC_INLINE jl_value_t *gc_mark_obj32(jl_ptls_t ptls, char *obj32_parent, uint
 {
     (void)jl_assume(obj32_begin < obj32_end);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
+    jl_value_t **slot;
     jl_value_t *new_obj;
     for (; obj32_begin < obj32_end - 1; obj32_begin++) {
-        new_obj = ((jl_value_t **)obj32_parent)[*obj32_begin];
-        if (new_obj)
-            verify_parent2("object", obj32_parent, &new_obj, "field(%d)",
-                           gc_slot_to_fieldidx(obj32_parent, &new_obj));
-        gc_try_claim_and_push(mq, new_obj, &nptr);
+        slot = &((jl_value_t **)obj32_parent)[*obj32_begin];
+        new_obj = *slot;
+        if (new_obj != NULL) {
+            verify_parent2("object", obj32_parent, slot, "field(%d)",
+                            gc_slot_to_fieldidx(obj32_parent, slot, (jl_datatype_t*)jl_typeof(obj32_parent)));
+            gc_try_claim_and_push(mq, new_obj, &nptr);
+            gc_heap_snapshot_record_object_edge((jl_value_t*)obj32_parent, slot);
+        }
     }
     // Unroll last iteration to avoid pushing last element
     // and popping right away
-    new_obj = ((jl_value_t **)obj32_parent)[*(obj32_end - 1)];
-    if (new_obj) {
-        verify_parent2("object", obj32_parent, &new_obj, "field(%d)",
-                           gc_slot_to_fieldidx(obj32_parent, &new_obj));
+    slot = &((jl_value_t **)obj32_parent)[*(obj32_end - 1)];
+    new_obj = *slot;
+    if (new_obj != NULL) {
+        verify_parent2("object", obj32_parent, slot, "field(%d)",
+                        gc_slot_to_fieldidx(obj32_parent, slot,(jl_datatype_t*)jl_typeof(obj32_parent)));
+        gc_heap_snapshot_record_object_edge((jl_value_t*)obj32_parent, slot);
         jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
         nptr |= !gc_old(o->header);
         if (!gc_try_setmark_tag(o, GC_MARKED)) new_obj = NULL;
@@ -1875,6 +1893,7 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
 {
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
+#ifndef GC_VERIFY
     // Decide whether need to chunk objary
     size_t nobjs = (obj_end - obj_begin) / step;
     if (nobjs > MAX_REFS_AT_ONCE) {
@@ -1884,12 +1903,15 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
         gc_chunkqueue_push(mq, &c);
         obj_end = obj_begin + step * MAX_REFS_AT_ONCE;
     }
+#endif
     for (; obj_begin < obj_end; obj_begin += step) {
         new_obj = *obj_begin;
-        if (new_obj)
+        if (new_obj != NULL) {
             verify_parent2("obj array", obj_parent, obj_begin, "elem(%d)",
                            gc_slot_to_arrayidx(obj_parent, obj_begin));
-        gc_try_claim_and_push(mq, new_obj, &nptr);
+            gc_try_claim_and_push(mq, new_obj, &nptr);
+            gc_heap_snapshot_record_array_edge(obj_parent, &new_obj);
+        }
     }
     gc_mark_push_remset(ptls, obj_parent, nptr);
 }
@@ -1902,6 +1924,7 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent, jl_va
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     size_t elsize = ((jl_array_t *)ary8_parent)->elsize / sizeof(jl_value_t *);
+#ifndef GC_VERIFY
     // Decide whether need to chunk ary8
     size_t nrefs = (ary8_end - ary8_begin) / elsize;
     if (nrefs > MAX_REFS_AT_ONCE) {
@@ -1911,13 +1934,16 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent, jl_va
         gc_chunkqueue_push(mq, &c);
         ary8_end = ary8_begin + elsize * MAX_REFS_AT_ONCE;
     }
+#endif
     for (; ary8_begin < ary8_end; ary8_begin += elsize) {
         for (uint8_t *pindex = elem_begin; pindex < elem_end; pindex++) {
             new_obj = ary8_begin[*pindex];
-            if (new_obj)
+            if (new_obj != NULL) {
                 verify_parent2("array", ary8_parent, &new_obj, "elem(%d)",
                                gc_slot_to_arrayidx(ary8_parent, ary8_begin));
-            gc_try_claim_and_push(mq, new_obj, &nptr);
+                gc_try_claim_and_push(mq, new_obj, &nptr);
+                gc_heap_snapshot_record_array_edge(ary8_parent, &new_obj);
+            }
         }
     }
     gc_mark_push_remset(ptls, ary8_parent, nptr);
@@ -1931,6 +1957,7 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent, jl_
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     size_t elsize = ((jl_array_t *)ary16_parent)->elsize / sizeof(jl_value_t *);
+#ifndef GC_VERIFY
     // Decide whether need to chunk ary16
     size_t nrefs = (ary16_end - ary16_begin) / elsize;
     if (nrefs > MAX_REFS_AT_ONCE) {
@@ -1940,13 +1967,16 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent, jl_
         gc_chunkqueue_push(mq, &c);
         ary16_end = ary16_begin + elsize * MAX_REFS_AT_ONCE;
     }
+#endif
     for (; ary16_begin < ary16_end; ary16_begin += elsize) {
         for (uint16_t *pindex = elem_begin; pindex < elem_end; pindex++) {
             new_obj = ary16_begin[*pindex];
-            if (new_obj)
+            if (new_obj != NULL) {
                 verify_parent2("array", ary16_parent, &new_obj, "elem(%d)",
                                gc_slot_to_arrayidx(ary16_parent, ary16_begin));
-            gc_try_claim_and_push(mq, new_obj, &nptr);
+                gc_try_claim_and_push(mq, new_obj, &nptr);
+                gc_heap_snapshot_record_array_edge(ary16_parent, &new_obj);
+            }
         }
     }
     gc_mark_push_remset(ptls, ary16_parent, nptr);
@@ -1955,6 +1985,7 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent, jl_
 // Mark chunk of large array
 STATIC_INLINE void gc_mark_chunk(jl_ptls_t ptls, jl_gc_markqueue_t *mq, jl_gc_chunk_t *c) JL_NOTSAFEPOINT
 {
+#ifndef GC_VERIFY
     switch (c->cid) {
         case GC_objary_chunk: {
             jl_value_t *obj_parent = c->parent;
@@ -2000,6 +2031,7 @@ STATIC_INLINE void gc_mark_chunk(jl_ptls_t ptls, jl_gc_markqueue_t *mq, jl_gc_ch
             abort();
         }
     }
+#endif
 }
 
 // Mark gc frame
@@ -2021,14 +2053,22 @@ STATIC_INLINE void gc_mark_stack(jl_ptls_t ptls, jl_gcframe_t *s, uint32_t nroot
                 if (gc_ptr_tag(new_obj, 1)) {
                     // handle tagged pointers in finalizer list
                     new_obj = (jl_value_t *)gc_ptr_clear_tag(new_obj, 1);
+                    // skip over the finalizer fptr
                     i++;
                 }
+                if (gc_ptr_tag(new_obj, 2))
+                    continue;
             }
-            gc_try_claim_and_push(mq, new_obj, NULL);
+            if (new_obj != NULL) {
+                gc_try_claim_and_push(mq, new_obj, NULL);
+                gc_heap_snapshot_record_frame_to_object_edge(s, new_obj);
+            }
         }
-        s = (jl_gcframe_t *)gc_read_stack(&s->prev, offset, lb, ub);
-        if (!s)
+        jl_gcframe_t *sprev = (jl_gcframe_t *)gc_read_stack(&s->prev, offset, lb, ub);
+        if (sprev == NULL)
             break;
+        gc_heap_snapshot_record_frame_to_frame_edge(s, sprev);
+        s = sprev;
         uintptr_t new_nroots = gc_read_stack(&s->nroots, offset, lb, ub);
         assert(new_nroots <= UINT32_MAX);
         nroots = (uint32_t)new_nroots;
@@ -2055,12 +2095,14 @@ STATIC_INLINE void gc_mark_excstack(jl_ptls_t ptls, jl_excstack_t *excstack, siz
             for (size_t jlval_index = 0; jlval_index < njlvals; jlval_index++) {
                 new_obj = jl_bt_entry_jlvalue(bt_entry, jlval_index);
                 gc_try_claim_and_push(mq, new_obj, NULL);
+                gc_heap_snapshot_record_frame_to_object_edge(bt_entry, new_obj);
             }
         }
         // The exception comes last - mark it
         new_obj = jl_excstack_exception(excstack, itr);
         itr = jl_excstack_next(excstack, itr);
         gc_try_claim_and_push(mq, new_obj, NULL);
+        gc_heap_snapshot_record_frame_to_object_edge(excstack, new_obj);
     }
 }
 
@@ -2083,10 +2125,12 @@ STATIC_INLINE void gc_mark_module_binding(jl_ptls_t ptls, jl_module_t *mb_parent
         }
         void *vb = jl_astaggedvalue(b);
         verify_parent1("module", mb_parent, &vb, "binding_buff");
+        // Record the size used for the box for non-const bindings
+        gc_heap_snapshot_record_module_to_binding(mb_parent, b);
         (void)vb;
         jl_value_t *value = jl_atomic_load_relaxed(&b->value);
         jl_value_t *globalref = jl_atomic_load_relaxed(&b->globalref);
-        if (value) {
+        if (value != NULL) {
             verify_parent2("module", mb_parent, &b->value, "binding(%s)",
                            jl_symbol_name(b->name));
             gc_try_claim_and_push(mq, value, &nptr);
@@ -2117,8 +2161,7 @@ void gc_mark_finlist_(jl_gc_markqueue_t *mq, jl_value_t **fl_begin, jl_value_t *
     // Decide whether need to chunk finlist
     size_t nrefs = (fl_end - fl_begin);
     if (nrefs > MAX_REFS_AT_ONCE) {
-        jl_gc_chunk_t c = {
-            GC_finlist_chunk, NULL, fl_begin + MAX_REFS_AT_ONCE, fl_end, 0, 0, 0, 0};
+        jl_gc_chunk_t c = {GC_finlist_chunk, NULL, fl_begin + MAX_REFS_AT_ONCE, fl_end, 0, 0, 0, 0};
         gc_chunkqueue_push(mq, &c);
         fl_end = fl_begin + MAX_REFS_AT_ONCE;
     }
@@ -2132,6 +2175,8 @@ void gc_mark_finlist_(jl_gc_markqueue_t *mq, jl_value_t **fl_begin, jl_value_t *
             fl_begin++;
             assert(fl_begin < fl_end);
         }
+        if (gc_ptr_tag(new_obj, 2))
+            continue;
         gc_try_claim_and_push(mq, new_obj, NULL);
     }
 }
@@ -2241,6 +2286,7 @@ STATIC_INLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_gc_markqueue_t *mq, void *
                 jl_value_t *owner = jl_array_data_owner(a);
                 uintptr_t nptr = (1 << 2) | (bits & GC_OLD);
                 gc_try_claim_and_push(mq, owner, &nptr);
+                gc_heap_snapshot_record_internal_array_edge(new_obj, owner);
                 gc_mark_push_remset(ptls, new_obj, nptr);
                 return;
             }
@@ -2336,13 +2382,15 @@ STATIC_INLINE void gc_mark_outrefs(jl_ptls_t ptls, jl_gc_markqueue_t *mq, void *
                 offset = (uintptr_t)stkbuf - lb;
             }
     #endif
-            if (s) {
+            if (s != NULL) {
                 nroots = gc_read_stack(&s->nroots, offset, lb, ub);
+                gc_heap_snapshot_record_task_to_frame_edge(ta, s);
                 assert(nroots <= UINT32_MAX);
                 gc_mark_stack(ptls, s, (uint32_t)nroots, offset, lb, ub);
             }
-            if (ta->excstack) {
+            if (ta->excstack != NULL) {
                 jl_excstack_t *excstack = ta->excstack;
+                gc_heap_snapshot_record_task_to_frame_edge(ta, excstack);
                 size_t itr = ta->excstack->top;
                 gc_setmark_buf_(ptls, excstack, bits,
                                 sizeof(jl_excstack_t) +
@@ -2506,11 +2554,31 @@ static void gc_premark(jl_ptls_t ptls2)
 
 static void gc_queue_thread_local(jl_gc_markqueue_t *mq, jl_ptls_t ptls2)
 {
-    gc_try_claim_and_push(mq, jl_atomic_load_relaxed(&ptls2->current_task), NULL);
-    gc_try_claim_and_push(mq, ptls2->root_task, NULL);
-    gc_try_claim_and_push(mq, ptls2->next_task, NULL);
-    gc_try_claim_and_push(mq, ptls2->previous_task, NULL);
-    gc_try_claim_and_push(mq, ptls2->previous_exception, NULL);
+    jl_task_t *task;
+    task = ptls2->root_task;
+    if (task != NULL) {
+        gc_try_claim_and_push(mq, task, NULL);
+        gc_heap_snapshot_record_root((jl_value_t*)task, "root task");
+    }
+    task = jl_atomic_load_relaxed(&ptls2->current_task);
+    if (task != NULL) {
+        gc_try_claim_and_push(mq, task, NULL);
+        gc_heap_snapshot_record_root((jl_value_t*)task, "current task");
+    }
+    task = ptls2->next_task;
+    if (task != NULL) {
+        gc_try_claim_and_push(mq, task, NULL);
+        gc_heap_snapshot_record_root((jl_value_t*)task, "next task");
+    }
+    task = ptls2->previous_task;
+    if (task != NULL) {
+        gc_try_claim_and_push(mq, task, NULL);
+        gc_heap_snapshot_record_root((jl_value_t*)task, "previous task");
+    }
+    if (ptls2->previous_exception) {
+        gc_try_claim_and_push(mq, ptls2->previous_exception, NULL);
+        gc_heap_snapshot_record_root((jl_value_t*)ptls2->previous_exception, "previous exception");
+    }
 }
 
 static void gc_queue_bt_buf(jl_gc_markqueue_t *mq, jl_ptls_t ptls2)
@@ -2560,12 +2628,14 @@ static void gc_mark_roots(jl_gc_markqueue_t *mq)
 {
     // modules
     gc_try_claim_and_push(mq, jl_main_module, NULL);
+    gc_heap_snapshot_record_root((jl_value_t*)jl_main_module, "main_module");
     // invisible builtin values
     gc_try_claim_and_push(mq, jl_an_empty_vec_any, NULL);
     gc_try_claim_and_push(mq, jl_module_init_order, NULL);
     for (size_t i = 0; i < jl_current_modules.size; i += 2) {
         if (jl_current_modules.table[i + 1] != HT_NOTFOUND) {
             gc_try_claim_and_push(mq, jl_current_modules.table[i], NULL);
+            gc_heap_snapshot_record_root((jl_value_t*)jl_current_modules.table[i], "top level module");
         }
     }
     gc_try_claim_and_push(mq, jl_anytuple_type_type, NULL);
