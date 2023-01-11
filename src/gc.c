@@ -11,6 +11,9 @@
 extern "C" {
 #endif
 
+long long total_count = 0;
+long fd = 0;
+
 // Linked list of callback functions
 
 typedef void (*jl_gc_cb_func_t)(void);
@@ -3310,6 +3313,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
 {
     JL_PROBE_GC_BEGIN(collection);
+    perf_event_reset();
 
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
@@ -3368,6 +3372,8 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
     jl_safepoint_end_gc();
     jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
     JL_PROBE_GC_END();
+    perf_event_count();
+    jl_safe_printf("GC cycles = %llu\n", total_count);
 
     // Only disable finalizers on current thread
     // Doing this on all threads is racy (it's impossible to check
@@ -3440,6 +3446,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     assert(gc_num.interval == default_collect_interval);
     jl_atomic_store_relaxed(&ptls->gc_num.allocd, -(int64_t)gc_num.interval);
+    perf_event_start();
 }
 
 // System-wide initializations

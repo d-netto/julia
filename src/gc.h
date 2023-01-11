@@ -13,6 +13,10 @@
 #include <string.h>
 #include <strings.h>
 #include <inttypes.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <linux/perf_event.h>
+#include <asm/unistd.h>
 #include "julia.h"
 #include "julia_threads.h"
 #include "julia_internal.h"
@@ -36,6 +40,51 @@ extern "C" {
 
 #define jl_malloc_tag ((void*)0xdeadaa01)
 #define jl_singleton_tag ((void*)0xdeadaa02)
+
+extern long long total_count;
+extern long fd;
+
+STATIC_INLINE void perf_event_reset(void);
+
+STATIC_INLINE void perf_event_start(void)
+{
+    struct perf_event_attr pe;
+    memset(&pe, 0, sizeof(pe));
+    pe.type = PERF_TYPE_HARDWARE;
+    pe.size = sizeof(pe);
+    pe.config = PERF_COUNT_HW_CPU_CYCLES;
+    pe.disabled = 1;
+    pe.exclude_kernel = 1;
+    pe.exclude_hv = 1;
+
+    fd = syscall(__NR_perf_event_open, &pe, 0, -1, -1, 0);
+    if (fd == -1) {
+        fprintf(stderr, "Error opening perf event\n");
+        exit(1);
+    }
+
+    perf_event_reset();
+}
+
+STATIC_INLINE void perf_event_reset(void)
+{
+    ioctl(fd, PERF_EVENT_IOC_RESET, 0);
+    ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+}
+
+
+STATIC_INLINE void perf_event_count(void)
+{
+    long long count;
+    ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+    read(fd, &count, sizeof(count));
+    total_count += count;
+}
+
+STATIC_INLINE long long perf_event_get_count(void)
+{
+    return total_count;
+}
 
 // Used by GC_DEBUG_ENV
 typedef struct {
