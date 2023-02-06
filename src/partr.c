@@ -108,6 +108,24 @@ void jl_init_threadinginfra(void)
 
 void JL_NORETURN jl_finish_task(jl_task_t *t);
 
+// gc thread function
+void jl_gc_threadfun(void *arg)
+{
+    jl_threadarg_t *targ = (jl_threadarg_t*)arg;
+
+    // initialize this thread (set tid, create heap, set up root task)
+    jl_ptls_t ptls = jl_init_threadtls(targ->tid);
+
+    // wait for all threads
+    jl_gc_state_set(ptls, JL_GC_STATE_SAFE, 0);
+    uv_barrier_wait(targ->barrier);
+
+    // free the thread argument here
+    free(targ);
+    while (1)
+        jl_cpu_pause();
+}
+
 // thread function: used by all except the main thread
 void jl_threadfun(void *arg)
 {
@@ -448,7 +466,6 @@ JL_DLLEXPORT jl_task_t *jl_task_get_next(jl_value_t *trypoptask, jl_value_t *q, 
                     break;
                 }
                 uv_cond_wait(&ptls->wake_signal, &ptls->sleep_lock);
-                // TODO: help with gc work here, if applicable
             }
             assert(jl_atomic_load_relaxed(&ptls->sleep_check_state) == not_sleeping);
             uv_mutex_unlock(&ptls->sleep_lock);
