@@ -648,7 +648,7 @@ void jl_init_threading(void)
     jl_n_threads_per_pool[1] = nthreadsi;
 
     jl_atomic_store_release(&jl_all_tls_states, (jl_ptls_t*)calloc(jl_all_tls_states_size, sizeof(jl_ptls_t)));
-    jl_atomic_store_release(&jl_n_threads, jl_all_tls_states_size - nthreadsgc);
+    jl_atomic_store_release(&jl_n_threads, jl_all_tls_states_size);
 }
 
 static uv_barrier_t thread_init_done;
@@ -686,13 +686,13 @@ void jl_start_threads(void)
     }
 
     // create threads
-    uv_barrier_init(&thread_init_done, nthreads + nthreadsgc);
+    uv_barrier_init(&thread_init_done, nthreads);
 
-    for (i = 1; i < nthreads + nthreadsgc; ++i) {
+    for (i = 1; i < nthreads; ++i) {
         jl_threadarg_t *t = (jl_threadarg_t *)malloc_s(sizeof(jl_threadarg_t)); // ownership will be passed to the thread
         t->tid = i;
         t->barrier = &thread_init_done;
-        if (i < nthreads) {
+        if (i < nthreads - nthreadsgc) {
             uv_thread_create(&uvtid, jl_threadfun, t);
             if (exclusive) {
                 mask[i] = 1;

@@ -122,8 +122,9 @@ void jl_gc_threadfun(void *arg)
 
     // free the thread argument here
     free(targ);
-    while (1)
-        jl_cpu_pause();
+    while (1) {
+        uv_sleep(100);
+    }
 }
 
 // thread function: used by all except the main thread
