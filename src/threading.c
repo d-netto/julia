@@ -603,7 +603,7 @@ void jl_init_threading(void)
     jl_n_threadpools = 1;
     int16_t nthreads = JULIA_NUM_THREADS;
     int16_t nthreadsi = 0;
-    int8_t ngcthreads = jl_options.ngcthreads;
+    int8_t ngcthreads = jl_options.ngcthreads + 1;
     char *endptr, *endptri;
 
     if (jl_options.nthreads != 0) { // --threads specified
@@ -647,7 +647,7 @@ void jl_init_threading(void)
     jl_n_threads_per_pool[1] = nthreadsi;
 
     jl_atomic_store_release(&jl_all_tls_states, (jl_ptls_t*)calloc(jl_all_tls_states_size, sizeof(jl_ptls_t)));
-    jl_atomic_store_release(&jl_n_threads, jl_all_tls_states_size);
+    jl_atomic_store_release(&jl_n_threads, jl_all_tls_states_size - ngcthreads);
 }
 
 static uv_barrier_t thread_init_done;
@@ -655,6 +655,7 @@ static uv_barrier_t thread_init_done;
 void jl_start_threads(void)
 {
     int nthreads = jl_atomic_load_relaxed(&jl_n_threads);
+    int ngcthreads = jl_options.ngcthreads + 1;
     int cpumasksize = uv_cpumask_size();
     char *cp;
     int i, exclusive;
@@ -685,17 +686,22 @@ void jl_start_threads(void)
     }
 
     // create threads
-    uv_barrier_init(&thread_init_done, nthreads);
+    uv_barrier_init(&thread_init_done, nthreads + ngcthreads);
 
-    for (i = 1; i < nthreads; ++i) {
+    for (i = 1; i < nthreads + ngcthreads; ++i) {
         jl_threadarg_t *t = (jl_threadarg_t *)malloc_s(sizeof(jl_threadarg_t)); // ownership will be passed to the thread
         t->tid = i;
         t->barrier = &thread_init_done;
-        uv_thread_create(&uvtid, jl_threadfun, t);
-        if (exclusive) {
-            mask[i] = 1;
-            uv_thread_setaffinity(&uvtid, mask, NULL, cpumasksize);
-            mask[i] = 0;
+        if (i <= ngcthreads) {
+            uv_thread_create(&uvtid, jl_gc_threadfun, t);
+        }
+        else {
+            uv_thread_create(&uvtid, jl_threadfun, t);
+            if (exclusive) {
+                mask[i] = 1;
+                uv_thread_setaffinity(&uvtid, mask, NULL, cpumasksize);
+                mask[i] = 0;
+            }
         }
         uv_thread_detach(&uvtid);
     }
