@@ -603,7 +603,7 @@ void jl_init_threading(void)
     jl_n_threadpools = 1;
     int16_t nthreads = JULIA_NUM_THREADS;
     int16_t nthreadsi = 0;
-    int8_t ngcthreads = jl_options.ngcthreads + 1;
+    int8_t ngcthreads = jl_options.ngcthreads;
     char *endptr, *endptri;
 
     if (jl_options.nthreads != 0) { // --threads specified
@@ -655,7 +655,7 @@ static uv_barrier_t thread_init_done;
 void jl_start_threads(void)
 {
     int nthreads = jl_atomic_load_relaxed(&jl_n_threads);
-    int ngcthreads = jl_options.ngcthreads + 1;
+    int ngcthreads = jl_options.ngcthreads;
     int cpumasksize = uv_cpumask_size();
     char *cp;
     int i, exclusive;

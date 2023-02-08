@@ -129,8 +129,7 @@ void jl_gc_threadfun(void *arg)
     free(targ);
 
     while (1) {
-        uv_sleep(1000);
-        jl_safe_printf("GC Thread\n");
+        jl_cpu_pause();
     }
 }
 
