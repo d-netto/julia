@@ -1268,30 +1268,6 @@ int gc_slot_to_arrayidx(void *obj, void *_slot) JL_NOTSAFEPOINT
     return (slot - start) / elsize;
 }
 
-// Print a backtrace from the `mq->start` of the mark queue up to `mq->current`
-// `offset` will be added to `mq->current` for convenience in the debugger.
-NOINLINE void gc_mark_loop_unwind(jl_ptls_t ptls, jl_gc_markqueue_t *mq, int offset)
-{
-    jl_jmp_buf *old_buf = jl_get_safe_restore();
-    jl_jmp_buf buf;
-    jl_set_safe_restore(&buf);
-    if (jl_setjmp(buf, 0) != 0) {
-        jl_safe_printf("\n!!! ERROR when unwinding gc mark loop -- ABORTING !!!\n");
-        jl_set_safe_restore(old_buf);
-        return;
-    }
-    jl_value_t **start = mq->start;
-    jl_value_t **end = mq->current + offset;
-    for (; start < end; start++) {
-        jl_value_t *obj = *start;
-        jl_taggedvalue_t *o = jl_astaggedvalue(obj);
-        jl_safe_printf("Queued object: %p :: (tag: %zu) (bits: %zu)\n", obj,
-                       (uintptr_t)o->header, ((uintptr_t)o->header & 3));
-        jl_((void*)(jl_datatype_t *)(o->header & ~(uintptr_t)0xf));
-    }
-    jl_set_safe_restore(old_buf);
-}
-
 static int gc_logging_enabled = 0;
 
 JL_DLLEXPORT void jl_enable_gc_logging(int enable) {

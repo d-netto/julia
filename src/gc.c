@@ -1757,7 +1757,6 @@ JL_NORETURN NOINLINE void gc_assert_datatype_fail(jl_ptls_t ptls, jl_datatype_t 
     jl_gc_debug_print_status();
     jl_(vt);
     jl_gc_debug_critical_error();
-    gc_mark_loop_unwind(ptls, mq, 0);
     abort();
 }
 
@@ -1780,35 +1779,16 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
     }
 }
 
-// Double the mark queue
-static NOINLINE void gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
-{
-    jl_value_t **old_start = mq->start;
-    size_t old_queue_size = (mq->end - mq->start);
-    size_t offset = (mq->current - old_start);
-    mq->start = (jl_value_t **)realloc_s(old_start, 2 * old_queue_size * sizeof(jl_value_t *));
-    mq->current = (mq->start + offset);
-    mq->end = (mq->start + 2 * old_queue_size);
-}
-
 // Push a work item to the queue
 STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
 {
-    if (__unlikely(mq->current == mq->end))
-        gc_markqueue_resize(mq);
-    *mq->current = obj;
-    mq->current++;
+    ws_queue_push(&mq->q, obj);
 }
 
 // Pop from the mark queue
 STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 {
-    jl_value_t *obj = NULL;
-    if (mq->current != mq->start) {
-        mq->current--;
-        obj = *mq->current;
-    }
-    return obj;
+    return ws_queue_pop(&mq->q);
 }
 
 // Double the chunk queue
@@ -3211,14 +3191,15 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     gc_cache->nbig_obj = 0;
 
     // Initialize GC mark-queue
-    size_t init_size = (1 << 18);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
-    mq->start = (jl_value_t **)malloc_s(init_size * sizeof(jl_value_t *));
-    mq->current = mq->start;
-    mq->end = mq->start + init_size;
     size_t cq_init_size = (1 << 14);
     mq->current_chunk = mq->chunk_start = (jl_gc_chunk_t *)malloc_s(cq_init_size * sizeof(jl_gc_chunk_t));
     mq->chunk_end = mq->chunk_start + cq_init_size;
+    ws_queue_t *q = &mq->q;
+    jl_atomic_store_relaxed(&q->top, 0);
+    jl_atomic_store_relaxed(&q->bottom, 0);
+    ws_array_t *a =  create_ws_array(1 << 18);
+    jl_atomic_store_relaxed(&q->array, a);
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     jl_atomic_store_relaxed(&ptls->gc_num.allocd, -(int64_t)gc_num.interval);

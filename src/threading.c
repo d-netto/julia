@@ -585,7 +585,7 @@ static void jl_check_tls(void)
 JL_DLLEXPORT const int jl_tls_elf_support = 0;
 #endif
 
-static int nthreadsgc = 1;
+static int nthreadsgc = 0;
 
 // interface to Julia; sets up to make the runtime thread-safe
 void jl_init_threading(void)
