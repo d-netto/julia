@@ -54,7 +54,7 @@ STATIC_INLINE int ws_queue_push(ws_queue_t *q, void *v) JL_NOTSAFEPOINT
 
 STATIC_INLINE void *ws_queue_pop(ws_queue_t *q) JL_NOTSAFEPOINT
 {
-        int64_t b = jl_atomic_load_relaxed(&q->bottom) - 1;
+    int64_t b = jl_atomic_load_relaxed(&q->bottom) - 1;
     ws_array_t *a = jl_atomic_load_relaxed(&q->array);
     jl_atomic_store_relaxed(&q->bottom, b);
 #if defined(_CPU_X86_64_)
@@ -81,7 +81,7 @@ STATIC_INLINE void *ws_queue_pop(ws_queue_t *q) JL_NOTSAFEPOINT
 
 STATIC_INLINE void *ws_queue_steal_from(ws_queue_t *q) JL_NOTSAFEPOINT
 {
-        int64_t t = jl_atomic_load_acquire(&q->top);
+    int64_t t = jl_atomic_load_acquire(&q->top);
 #if defined(_CPU_X86_64_)
     __asm__ volatile ("lock orq $0, (%rsp)");
 #else

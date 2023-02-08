@@ -176,6 +176,9 @@ typedef struct {
     struct _jl_gc_chunk_t *current_chunk;
     struct _jl_gc_chunk_t *chunk_end;
     ws_queue_t q;
+    struct _jl_value_t **overflow_q_start;
+    struct _jl_value_t **overflow_q_current;
+    struct _jl_value_t **overflow_q_end;
 } jl_gc_markqueue_t;
 
 typedef struct {
