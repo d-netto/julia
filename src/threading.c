@@ -603,6 +603,7 @@ void jl_init_threading(void)
     jl_n_threadpools = 1;
     int16_t nthreads = JULIA_NUM_THREADS;
     int16_t nthreadsi = 0;
+    int8_t ngcthreads = jl_options.ngcthreads;
     char *endptr, *endptri;
 
     if (jl_options.nthreads != 0) { // --threads specified
@@ -640,7 +641,7 @@ void jl_init_threading(void)
         }
     }
 
-    jl_all_tls_states_size = nthreads + nthreadsi;
+    jl_all_tls_states_size = nthreads + nthreadsi + ngcthreads;
     jl_n_threads_per_pool = (int*)malloc_s(2 * sizeof(int));
     jl_n_threads_per_pool[0] = nthreads;
     jl_n_threads_per_pool[1] = nthreadsi;
