@@ -108,6 +108,9 @@ void jl_init_threadinginfra(void)
 
 void JL_NORETURN jl_finish_task(jl_task_t *t);
 
+extern uv_mutex_t gc_threads_lock;
+extern uv_cond_t gc_threads_cond;
+
 // gc thread function
 void jl_gc_threadfun(void *arg)
 {
@@ -129,7 +132,9 @@ void jl_gc_threadfun(void *arg)
     free(targ);
 
     while (1) {
-        jl_cpu_pause();
+        uv_mutex_lock(&gc_threads_lock);
+        uv_cond_wait(&gc_threads_cond, &gc_threads_lock);
+        uv_mutex_unlock(&gc_threads_lock);
     }
 }
 

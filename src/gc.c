@@ -11,6 +11,10 @@
 extern "C" {
 #endif
 
+uv_mutex_t gc_threads_lock;
+uv_cond_t gc_threads_cond;
+static int ngcthreds;
+
 // Linked list of callback functions
 
 typedef void (*jl_gc_cb_func_t)(void);
@@ -3184,6 +3188,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     arraylist_new(heap->last_remset, 0);
     arraylist_new(&ptls->finalizers, 0);
     arraylist_new(&ptls->sweep_objs, 0);
+    ngcthreds = jl_options.ngcthreads;
 
     jl_gc_mark_cache_t *gc_cache = &ptls->gc_cache;
     gc_cache->perm_scanned_bytes = 0;
@@ -3216,6 +3221,8 @@ void jl_gc_init(void)
     JL_MUTEX_INIT(&finalizers_lock);
     uv_mutex_init(&gc_cache_lock);
     uv_mutex_init(&gc_perm_lock);
+    uv_mutex_init(&gc_threads_lock);
+    uv_cond_init(&gc_threads_cond);
 
     jl_gc_init_page();
     jl_gc_debug_init();
