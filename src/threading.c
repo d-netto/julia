@@ -585,8 +585,6 @@ static void jl_check_tls(void)
 JL_DLLEXPORT const int jl_tls_elf_support = 0;
 #endif
 
-static int nthreadsgc = 0;
-
 // interface to Julia; sets up to make the runtime thread-safe
 void jl_init_threading(void)
 {
@@ -642,7 +640,7 @@ void jl_init_threading(void)
         }
     }
 
-    jl_all_tls_states_size = nthreads + nthreadsi + nthreadsgc;
+    jl_all_tls_states_size = nthreads + nthreadsi;
     jl_n_threads_per_pool = (int*)malloc_s(2 * sizeof(int));
     jl_n_threads_per_pool[0] = nthreads;
     jl_n_threads_per_pool[1] = nthreadsi;
@@ -692,16 +690,11 @@ void jl_start_threads(void)
         jl_threadarg_t *t = (jl_threadarg_t *)malloc_s(sizeof(jl_threadarg_t)); // ownership will be passed to the thread
         t->tid = i;
         t->barrier = &thread_init_done;
-        if (i < nthreads - nthreadsgc) {
-            uv_thread_create(&uvtid, jl_threadfun, t);
-            if (exclusive) {
-                mask[i] = 1;
-                uv_thread_setaffinity(&uvtid, mask, NULL, cpumasksize);
-                mask[i] = 0;
-            }
-        }
-        else {
-            uv_thread_create(&uvtid, jl_gc_threadfun, t);
+        uv_thread_create(&uvtid, jl_threadfun, t);
+        if (exclusive) {
+            mask[i] = 1;
+            uv_thread_setaffinity(&uvtid, mask, NULL, cpumasksize);
+            mask[i] = 0;
         }
         uv_thread_detach(&uvtid);
     }
