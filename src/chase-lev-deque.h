@@ -37,19 +37,16 @@ typedef struct {
     _Atomic(ws_array_t *) array;
 } ws_queue_t;
 
-STATIC_INLINE int ws_queue_push(ws_queue_t *q, void *v) JL_NOTSAFEPOINT
+STATIC_INLINE void ws_queue_push(ws_queue_t *q, void *v) JL_NOTSAFEPOINT
 {
     int64_t b = jl_atomic_load_relaxed(&q->bottom);
     int64_t t = jl_atomic_load_acquire(&q->top);
     ws_array_t *a = jl_atomic_load_relaxed(&q->array);
-    if (__unlikely(b - t > a->capacity - 1)) {
-        // Queue is full
-        return 0;
-    }
+    if (__unlikely(b - t > a->capacity - 1))
+        abort();
     jl_atomic_store_relaxed((_Atomic(void *) *)&a->buffer[b % a->capacity], v);
     jl_fence_release();
     jl_atomic_store_relaxed(&q->bottom, b + 1);
-    return 1;
 }
 
 STATIC_INLINE void *ws_queue_pop(ws_queue_t *q) JL_NOTSAFEPOINT

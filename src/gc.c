@@ -3222,8 +3222,6 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     jl_atomic_store_relaxed(&q->array, a);
     mq->current_chunk = mq->chunk_start = (jl_gc_chunk_t *)malloc_s((1 << 14) * sizeof(jl_gc_chunk_t));
     mq->chunk_end = mq->chunk_start + (1 << 14);
-    mq->overflow_q_current = mq->overflow_q_start = (jl_value_t **)malloc_s((1 << 18) * sizeof(jl_value_t *));
-    mq->overflow_q_current = mq->overflow_q_start + (1 << 18);
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     jl_atomic_store_relaxed(&ptls->gc_num.allocd, -(int64_t)gc_num.interval);
