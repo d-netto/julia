@@ -2801,10 +2801,15 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
         goto pop;
     }
     steal : {
-        // Steal from a random victim
         for (int i = 0; i < 2 * gc_n_threads; i++) {
             uint32_t v = cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % gc_n_threads;
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
+            new_obj = gc_markqueue_steal_from(mq2);
+            if (new_obj != NULL)
+                goto mark;
+        }
+        for (int i = 0; i < gc_n_threads; i++) {
+            jl_gc_markqueue_t *mq2 = &gc_all_tls_states[i]->mark_queue;
             new_obj = gc_markqueue_steal_from(mq2);
             if (new_obj != NULL)
                 goto mark;
