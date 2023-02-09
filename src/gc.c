@@ -2583,7 +2583,7 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
     }
     steal : {
         // Steal from a random victim
-        for (int i = 0; i < 2 * jl_n_threads; i++) {
+        for (int i = 0; i < 2 * gc_n_threads; i++) {
             uint32_t v = cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % jl_n_threads;
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
             new_obj = gc_markqueue_steal_from(mq2);
@@ -2607,6 +2607,7 @@ void gc_mark_loop_master(jl_ptls_t ptls)
         // Spin while gc threads are marking
         while (!jl_atomic_load(&gc_threads_entered_marking) || jl_atomic_load(&gc_n_threads_marking) > 0)
             jl_cpu_pause();
+        jl_atomic_store(&jl_gc_marking, 0);
         jl_atomic_store(&gc_threads_entered_marking, 0);
     }
 }
