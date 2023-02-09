@@ -657,7 +657,7 @@ static uv_barrier_t thread_init_done;
 void jl_start_threads(void)
 {
     int nthreads = jl_atomic_load_relaxed(&jl_n_threads);
-    int ngcthreads = jl_options.ngcthreads;
+    int ngcthreads = jl_n_gcthreads;
     int cpumasksize = uv_cpumask_size();
     char *cp;
     int i, exclusive;

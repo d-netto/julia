@@ -112,15 +112,15 @@ extern uv_mutex_t gc_threads_lock;
 extern uv_cond_t gc_threads_cond;
 extern _Atomic(uint8_t) jl_gc_marking;
 extern void gc_mark_loop_worker(jl_ptls_t ptls);
-const size_t min_timeout_ms = 20;
-const size_t max_timeout_ms = 200;
+const size_t min_timeout_ms = 16;
+const size_t max_timeout_ms = 256;
 
 // gc thread function
 void jl_gc_threadfun(void *arg)
 {
     jl_threadarg_t *targ = (jl_threadarg_t*)arg;
 
-    // initialize this thread (set tid, create heap, set up root task)
+    // initialize this thread (set tid and create heap)
     jl_ptls_t ptls = jl_init_threadtls(targ->tid);
 
     // wait for all threads
