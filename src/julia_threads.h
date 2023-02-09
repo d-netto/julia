@@ -4,6 +4,7 @@
 #ifndef JL_THREADS_H
 #define JL_THREADS_H
 
+#include "chase-lev-deque.h"
 #include "julia_atomics.h"
 #ifndef _OS_WINDOWS_
 #include "pthread.h"
@@ -174,9 +175,7 @@ typedef struct {
     struct _jl_gc_chunk_t *chunk_start;
     struct _jl_gc_chunk_t *current_chunk;
     struct _jl_gc_chunk_t *chunk_end;
-    struct _jl_value_t **start;
-    struct _jl_value_t **current;
-    struct _jl_value_t **end;
+    ws_queue_t q;
 } jl_gc_markqueue_t;
 
 typedef struct {

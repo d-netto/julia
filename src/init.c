@@ -863,11 +863,7 @@ static NOINLINE void _finish_julia_init(JL_IMAGE_SEARCH rel, jl_ptls_t ptls, jl_
         jl_load(jl_core_module, "boot.jl");
         post_boot_hooks();
     }
-
-    if (jl_base_module == NULL) {
-        // nthreads > 1 requires code in Base
-        jl_atomic_store_relaxed(&jl_n_threads, 1);
-    }
+    
     jl_start_threads();
 
     jl_gc_enable(1);
