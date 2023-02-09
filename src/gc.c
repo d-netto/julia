@@ -2592,7 +2592,7 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
         }
     }
     gc_drain_own_chunkqueue(ptls, mq);
-    jl_atomic_store(&gc_n_threads_marking, -1);
+    jl_atomic_fetch_add(&gc_n_threads_marking, -1);
 }
 
 void gc_mark_loop_master(jl_ptls_t ptls)
