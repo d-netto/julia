@@ -1927,13 +1927,13 @@ STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_
 // Pop from the mark queue
 STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 {
-    return ws_queue_pop(&mq->q);
+    return (jl_value_t *)ws_queue_pop(&mq->q);
 }
 
 // Steal from `mq2`
 STATIC_INLINE jl_value_t *gc_markqueue_steal_from(jl_gc_markqueue_t *mq2)
 {
-    return ws_queue_steal_from(&mq2->q);
+    return (jl_value_t *)ws_queue_steal_from(&mq2->q);
 }
 
 // Double the chunk queue
@@ -2816,7 +2816,7 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
 
 void gc_mark_loop_master(jl_ptls_t ptls)
 {
-    if (__likely(jl_n_gcthreads) == 0) {
+    if (__likely(jl_n_gcthreads == 0)) {
         gc_mark_loop(ptls);
     }
     else {

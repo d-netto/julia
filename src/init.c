@@ -863,7 +863,6 @@ static NOINLINE void _finish_julia_init(JL_IMAGE_SEARCH rel, jl_ptls_t ptls, jl_
         jl_load(jl_core_module, "boot.jl");
         post_boot_hooks();
     }
-    
     jl_start_threads();
 
     jl_gc_enable(1);
