@@ -110,6 +110,7 @@ void JL_NORETURN jl_finish_task(jl_task_t *t);
 
 extern uv_mutex_t gc_threads_lock;
 extern uv_cond_t gc_threads_cond;
+extern _Atomic(uint8_t) jl_gc_marking;
 
 // gc thread function
 void jl_gc_threadfun(void *arg)
@@ -130,6 +131,9 @@ void jl_gc_threadfun(void *arg)
         uv_mutex_lock(&gc_threads_lock);
         uv_cond_wait(&gc_threads_cond, &gc_threads_lock);
         uv_mutex_unlock(&gc_threads_lock);
+        while (jl_atomic_load(&jl_gc_marking)) {
+            jl_cpu_pause();
+        }
     }
 }
 

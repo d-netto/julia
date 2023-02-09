@@ -13,6 +13,9 @@ extern "C" {
 
 uv_mutex_t gc_threads_lock;
 uv_cond_t gc_threads_cond;
+_Atomic(uint8_t) jl_gc_marking;
+_Atomic(uint8_t) gc_threads_entered_marking;
+_Atomic(uint8_t) gc_n_threads_marking;
 
 // Linked list of callback functions
 
@@ -2552,6 +2555,16 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
 {
     gc_mark_loop_(ptls, &ptls->mark_queue);
     gc_drain_own_chunkqueue(ptls, &ptls->mark_queue);
+}
+
+JL_EXTENSION NOINLINE void gc_mark_loop_master(void)
+{
+    uv_mutex_lock(&gc_threads_lock);
+    uv_cond_broadcast(&gc_threads_cond);
+    uv_mutex_unlock(&gc_threads_lock);
+    // Spin while gc threads are marking
+    while (!jl_atomic_load(&gc_threads_entered_marking) || jl_atomic_load(&gc_n_threads_marking) > 0)
+        jl_cpu_pause();
 }
 
 static void gc_premark(jl_ptls_t ptls2)
