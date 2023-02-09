@@ -2557,7 +2557,13 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
     gc_drain_own_chunkqueue(ptls, &ptls->mark_queue);
 }
 
-JL_EXTENSION NOINLINE void gc_mark_loop_master(void)
+void gc_mark_loop_worker(jl_ptls_t ptls)
+{
+    jl_atomic_fetch_add(&gc_n_threads_marking, 1);
+    jl_atomic_store(&gc_threads_entered_marking, 1);
+}
+
+void gc_mark_loop_master(void)
 {
     uv_mutex_lock(&gc_threads_lock);
     uv_cond_broadcast(&gc_threads_cond);
@@ -2565,6 +2571,7 @@ JL_EXTENSION NOINLINE void gc_mark_loop_master(void)
     // Spin while gc threads are marking
     while (!jl_atomic_load(&gc_threads_entered_marking) || jl_atomic_load(&gc_n_threads_marking) > 0)
         jl_cpu_pause();
+    jl_atomic_store(&gc_threads_entered_marking, 0);
 }
 
 static void gc_premark(jl_ptls_t ptls2)
