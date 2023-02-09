@@ -11,6 +11,13 @@
 extern "C" {
 #endif
 
+int jl_n_gcthreads;
+uv_mutex_t gc_threads_lock;
+uv_cond_t gc_threads_cond;
+_Atomic(uint8_t) jl_gc_marking;
+_Atomic(uint8_t) gc_threads_entered_marking;
+_Atomic(uint8_t) gc_n_threads_marking;
+
 // Linked list of callback functions
 
 typedef void (*jl_gc_cb_func_t)(void);
@@ -1889,7 +1896,6 @@ JL_NORETURN NOINLINE void gc_assert_datatype_fail(jl_ptls_t ptls, jl_datatype_t 
     jl_gc_debug_print_status();
     jl_(vt);
     jl_gc_debug_critical_error();
-    gc_mark_loop_unwind(ptls, mq, 0);
     abort();
 }
 
@@ -1912,35 +1918,22 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
     }
 }
 
-// Double the mark queue
-static NOINLINE void gc_markqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
-{
-    jl_value_t **old_start = mq->start;
-    size_t old_queue_size = (mq->end - mq->start);
-    size_t offset = (mq->current - old_start);
-    mq->start = (jl_value_t **)realloc_s(old_start, 2 * old_queue_size * sizeof(jl_value_t *));
-    mq->current = (mq->start + offset);
-    mq->end = (mq->start + 2 * old_queue_size);
-}
-
 // Push a work item to the queue
 STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
 {
-    if (__unlikely(mq->current == mq->end))
-        gc_markqueue_resize(mq);
-    *mq->current = obj;
-    mq->current++;
+    ws_queue_push(&mq->q, obj);
 }
 
 // Pop from the mark queue
 STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 {
-    jl_value_t *obj = NULL;
-    if (mq->current != mq->start) {
-        mq->current--;
-        obj = *mq->current;
-    }
-    return obj;
+    return ws_queue_pop(&mq->q);
+}
+
+// Steal from `mq2`
+STATIC_INLINE jl_value_t *gc_markqueue_steal_from(jl_gc_markqueue_t *mq2)
+{
+    return ws_queue_steal_from(&mq2->q);
 }
 
 // Double the chunk queue
@@ -2790,6 +2783,55 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
     gc_drain_own_chunkqueue(ptls, &ptls->mark_queue);
 }
 
+void gc_mark_loop_worker(jl_ptls_t ptls)
+{
+    jl_atomic_fetch_add(&gc_n_threads_marking, 1);
+    jl_atomic_store(&gc_threads_entered_marking, 1);
+    jl_gc_markqueue_t *mq = &ptls->mark_queue;
+    void *new_obj;
+    pop : {
+        new_obj = gc_markqueue_pop(mq);
+        // Couldn't get object from own queue: try to
+        // steal from someone else
+        if (new_obj == NULL)
+            goto steal;
+    }
+    mark : {
+        gc_mark_outrefs(ptls, mq, new_obj, 0);
+        goto pop;
+    }
+    steal : {
+        // Steal from a random victim
+        for (int i = 0; i < 2 * gc_n_threads; i++) {
+            uint32_t v = cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % gc_n_threads;
+            jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
+            new_obj = gc_markqueue_steal_from(mq2);
+            if (new_obj != NULL)
+                goto mark;
+        }
+    }
+    gc_drain_own_chunkqueue(ptls, mq);
+    jl_atomic_fetch_add(&gc_n_threads_marking, -1);
+}
+
+void gc_mark_loop_master(jl_ptls_t ptls)
+{
+    if (__likely(jl_n_gcthreads) == 0) {
+        gc_mark_loop(ptls);
+    }
+    else {
+        jl_atomic_store(&gc_threads_entered_marking, 0);
+        jl_atomic_store(&jl_gc_marking, 1);
+        uv_mutex_lock(&gc_threads_lock);
+        uv_cond_broadcast(&gc_threads_cond);
+        uv_mutex_unlock(&gc_threads_lock);
+        // Spin while gc threads are marking
+        while (!jl_atomic_load(&gc_threads_entered_marking) || jl_atomic_load(&gc_n_threads_marking) > 0)
+            jl_cpu_pause();
+        jl_atomic_store(&jl_gc_marking, 0);
+    }
+}
+
 static void gc_premark(jl_ptls_t ptls2)
 {
     arraylist_t *remset = ptls2->heap.remset;
@@ -3073,7 +3115,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
             gc_invoke_callbacks(jl_gc_cb_root_scanner_t,
                 gc_cblist_root_scanner, (collection));
         }
-        gc_mark_loop(ptls);
+        gc_mark_loop_master(ptls);
 
         // 4. check for objects to finalize
         clear_weak_refs();
@@ -3277,14 +3319,15 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
 
     if (collection == JL_GC_AUTO) {
         //If we aren't freeing enough or are seeing lots and lots of pointers let it increase faster
-        if(!not_freed_enough || large_frontier) {
+        if (!not_freed_enough || large_frontier) {
             int64_t tot = 2 * (live_bytes + gc_num.since_sweep) / 3;
             if (gc_num.interval > tot) {
                 gc_num.interval = tot;
                 last_long_collect_interval = tot;
             }
         // If the current interval is larger than half the live data decrease the interval
-        } else {
+        }
+        else {
             int64_t half = (live_bytes / 2);
             if (gc_num.interval > half)
                 gc_num.interval = half;
@@ -3468,14 +3511,14 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     gc_cache->nbig_obj = 0;
 
     // Initialize GC mark-queue
-    size_t init_size = (1 << 18);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
-    mq->start = (jl_value_t **)malloc_s(init_size * sizeof(jl_value_t *));
-    mq->current = mq->start;
-    mq->end = mq->start + init_size;
-    size_t cq_init_size = (1 << 14);
-    mq->current_chunk = mq->chunk_start = (jl_gc_chunk_t *)malloc_s(cq_init_size * sizeof(jl_gc_chunk_t));
-    mq->chunk_end = mq->chunk_start + cq_init_size;
+    ws_queue_t *q = &mq->q;
+    jl_atomic_store_relaxed(&q->top, 0);
+    jl_atomic_store_relaxed(&q->bottom, 0);
+    ws_array_t *a =  create_ws_array(1 << 18);
+    jl_atomic_store_relaxed(&q->array, a);
+    mq->current_chunk = mq->chunk_start = (jl_gc_chunk_t *)malloc_s((1 << 14) * sizeof(jl_gc_chunk_t));
+    mq->chunk_end = mq->chunk_start + (1 << 14);
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     jl_atomic_store_relaxed(&ptls->gc_num.allocd, -(int64_t)gc_num.interval);
@@ -3489,6 +3532,8 @@ void jl_gc_init(void)
     JL_MUTEX_INIT(&finalizers_lock);
     uv_mutex_init(&gc_cache_lock);
     uv_mutex_init(&gc_perm_lock);
+    uv_mutex_init(&gc_threads_lock);
+    uv_cond_init(&gc_threads_cond);
 
     jl_gc_init_page();
     jl_gc_debug_init();

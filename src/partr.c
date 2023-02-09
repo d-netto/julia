@@ -108,7 +108,44 @@ void jl_init_threadinginfra(void)
 
 void JL_NORETURN jl_finish_task(jl_task_t *t);
 
-// thread function: used by all except the main thread
+extern uv_mutex_t gc_threads_lock;
+extern uv_cond_t gc_threads_cond;
+extern _Atomic(uint8_t) jl_gc_marking;
+extern void gc_mark_loop_worker(jl_ptls_t ptls);
+const size_t min_timeout_ms = 20;
+const size_t max_timeout_ms = 200;
+
+// gc thread function
+void jl_gc_threadfun(void *arg)
+{
+    jl_threadarg_t *targ = (jl_threadarg_t*)arg;
+
+    // initialize this thread (set tid, create heap, set up root task)
+    jl_ptls_t ptls = jl_init_threadtls(targ->tid);
+
+    // wait for all threads
+    jl_gc_state_set(ptls, JL_GC_STATE_WAITING, 0);
+    uv_barrier_wait(targ->barrier);
+
+    // free the thread argument here
+    free(targ);
+
+    while (1) {
+        uv_mutex_lock(&gc_threads_lock);
+        uv_cond_wait(&gc_threads_cond, &gc_threads_lock);
+        uv_mutex_unlock(&gc_threads_lock);
+        int timeout_ms = min_timeout_ms;
+        while (jl_atomic_load(&jl_gc_marking)) {
+            gc_mark_loop_worker(ptls);
+            // Failed to steal: backoff and try later
+            timeout_ms *= 2;
+            if (timeout_ms > max_timeout_ms) timeout_ms = max_timeout_ms;
+            uv_sleep(timeout_ms);
+        }
+    }
+}
+
+// thread function: used by all mutator threads except the main thread
 void jl_threadfun(void *arg)
 {
     jl_threadarg_t *targ = (jl_threadarg_t*)arg;
@@ -448,7 +485,6 @@ JL_DLLEXPORT jl_task_t *jl_task_get_next(jl_value_t *trypoptask, jl_value_t *q, 
                     break;
                 }
                 uv_cond_wait(&ptls->wake_signal, &ptls->sleep_lock);
-                // TODO: help with gc work here, if applicable
             }
             assert(jl_atomic_load_relaxed(&ptls->sleep_check_state) == not_sleeping);
             uv_mutex_unlock(&ptls->sleep_lock);
