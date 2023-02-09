@@ -2601,6 +2601,7 @@ void gc_mark_loop_master(jl_ptls_t ptls)
         gc_mark_loop(ptls);
     }
     else {
+        jl_atomic_store(&jl_gc_marking, 1);
         uv_mutex_lock(&gc_threads_lock);
         uv_cond_broadcast(&gc_threads_cond);
         uv_mutex_unlock(&gc_threads_lock);
