@@ -11,6 +11,7 @@
 extern "C" {
 #endif
 
+int jl_n_gcthreads;
 uv_mutex_t gc_threads_lock;
 uv_cond_t gc_threads_cond;
 _Atomic(uint8_t) jl_gc_marking;
@@ -1797,6 +1798,12 @@ STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
     return ws_queue_pop(&mq->q);
 }
 
+// Steal from `mq2`
+STATIC_INLINE jl_value_t *gc_markqueue_steal_from(jl_gc_markqueue_t *mq2)
+{
+    return ws_queue_steal_from(&mq2->q);
+}
+
 // Double the chunk queue
 static NOINLINE void gc_chunkqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
@@ -2561,17 +2568,47 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
 {
     jl_atomic_fetch_add(&gc_n_threads_marking, 1);
     jl_atomic_store(&gc_threads_entered_marking, 1);
+    jl_gc_markqueue_t *mq = &ptls->mark_queue;
+    void *new_obj;
+    pop : {
+        new_obj = gc_markqueue_pop(mq);
+        // Couldn't get object from own queue: try to
+        // steal from someone else
+        if (!new_obj)
+            goto steal;
+    }
+    mark : {
+        gc_mark_outrefs(ptls, mq, new_obj, 0);
+        goto pop;
+    }
+    steal : {
+        // Steal from a random victim
+        for (int i = 0; i < 2 * jl_n_threads; i++) {
+            uint32_t v = cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % jl_n_threads;
+            jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
+            new_obj = gc_markqueue_steal_from(mq2);
+            if (new_obj)
+                goto mark;
+        }
+    }
+    gc_drain_own_chunkqueue(ptls, mq);
+    jl_atomic_store(&gc_n_threads_marking, -1);
 }
 
-void gc_mark_loop_master(void)
+void gc_mark_loop_master(jl_ptls_t ptls)
 {
-    uv_mutex_lock(&gc_threads_lock);
-    uv_cond_broadcast(&gc_threads_cond);
-    uv_mutex_unlock(&gc_threads_lock);
-    // Spin while gc threads are marking
-    while (!jl_atomic_load(&gc_threads_entered_marking) || jl_atomic_load(&gc_n_threads_marking) > 0)
-        jl_cpu_pause();
-    jl_atomic_store(&gc_threads_entered_marking, 0);
+    if (__likely(jl_n_gcthreads) == 0) {
+        gc_mark_loop(ptls);
+    }
+    else {
+        uv_mutex_lock(&gc_threads_lock);
+        uv_cond_broadcast(&gc_threads_cond);
+        uv_mutex_unlock(&gc_threads_lock);
+        // Spin while gc threads are marking
+        while (!jl_atomic_load(&gc_threads_entered_marking) || jl_atomic_load(&gc_n_threads_marking) > 0)
+            jl_cpu_pause();
+        jl_atomic_store(&gc_threads_entered_marking, 0);
+    }
 }
 
 static void gc_premark(jl_ptls_t ptls2)
@@ -2852,7 +2889,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         gc_invoke_callbacks(jl_gc_cb_root_scanner_t,
             gc_cblist_root_scanner, (collection));
     }
-    gc_mark_loop(ptls);
+    gc_mark_loop_master(ptls);
 
     // 4. check for objects to finalize
     clear_weak_refs();
