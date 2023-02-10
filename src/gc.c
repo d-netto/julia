@@ -1921,7 +1921,9 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
 // Push a work item to the queue
 STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
 {
-    ws_queue_push(&mq->q, obj);
+    ws_array_t *old_a = ws_queue_push(&mq->q, obj);
+    if (__unlikely(old_a != NULL))
+        arraylist_push(&mq->reclaim_set, old_a);
 }
 
 // Pop from the mark queue
@@ -2810,13 +2812,13 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
             uint32_t v = cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % gc_n_threads;
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
             new_obj = gc_markqueue_steal_from(mq2);
-            if (new_obj != NULL)
+            if (__likely(new_obj != NULL))
                 goto mark;
         }
         for (int i = 0; i < gc_n_threads; i++) {
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[i]->mark_queue;
             new_obj = gc_markqueue_steal_from(mq2);
-            if (new_obj != NULL)
+            if (__likely(new_obj != NULL))
                 goto mark;
         }
         for (int i = 0; i < gc_n_threads; i++) {
@@ -2833,7 +2835,7 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
 
 void gc_mark_loop_master(jl_ptls_t ptls)
 {
-    if (__likely(jl_n_gcthreads == 0)) {
+    if (jl_n_gcthreads == 0 || gc_heap_snapshot_enabled) {
         gc_mark_loop(ptls);
     }
     else {
@@ -2846,6 +2848,16 @@ void gc_mark_loop_master(jl_ptls_t ptls)
         while (!jl_atomic_load(&gc_threads_entered_marking) || jl_atomic_load(&gc_n_threads_marking) > 0)
             jl_cpu_pause();
         jl_atomic_store(&jl_gc_marking, 0);
+        // Clean up `reclaim-sets`
+        for (int i = 0; i < gc_n_threads; i++) {
+            jl_ptls_t ptls2 = gc_all_tls_states[i];
+            arraylist_t *reclaim_set2 = &ptls2->mark_queue.reclaim_set;
+            ws_array_t *a = NULL;
+            while ((a = (ws_array_t *)arraylist_pop(reclaim_set2)) != NULL) {
+                free(a->buffer);
+                free(a);
+            }
+        }
     }
 }
 
@@ -3529,14 +3541,15 @@ void jl_init_thread_heap(jl_ptls_t ptls)
 
     // Initialize GC mark-queue
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
+    mq->current_chunk = mq->chunk_start = (jl_gc_chunk_t *)malloc_s((1 << 14) * sizeof(jl_gc_chunk_t));
+    mq->chunk_end = mq->chunk_start + (1 << 14);
+    jl_mutex_init(&mq->chunk_q_lock);
     ws_queue_t *q = &mq->q;
     jl_atomic_store_relaxed(&q->top, 0);
     jl_atomic_store_relaxed(&q->bottom, 0);
     ws_array_t *a =  create_ws_array(1 << 18);
     jl_atomic_store_relaxed(&q->array, a);
-    mq->current_chunk = mq->chunk_start = (jl_gc_chunk_t *)malloc_s((1 << 14) * sizeof(jl_gc_chunk_t));
-    mq->chunk_end = mq->chunk_start + (1 << 14);
-    jl_mutex_init(&mq->chunk_q_lock);
+    arraylist_new(&mq->reclaim_set, 32);
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     jl_atomic_store_relaxed(&ptls->gc_num.allocd, -(int64_t)gc_num.interval);
