@@ -1950,19 +1950,24 @@ static NOINLINE void gc_chunkqueue_resize(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 // Push chunk `*c` into chunk queue
 STATIC_INLINE void gc_chunkqueue_push(jl_gc_markqueue_t *mq, jl_gc_chunk_t *c) JL_NOTSAFEPOINT
 {
+    jl_mutex_lock_nogc(&mq->chunk_q_lock);
     if (__unlikely(mq->current_chunk == mq->chunk_end))
         gc_chunkqueue_resize(mq);
     *mq->current_chunk = *c;
     mq->current_chunk++;
+    jl_mutex_unlock_nogc(&mq->chunk_q_lock);
 }
 
 // Pop chunk from chunk queue
 STATIC_INLINE jl_gc_chunk_t gc_chunkqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
     jl_gc_chunk_t c = {.cid = GC_empty_chunk};
-    if (mq->current_chunk != mq->chunk_start) {
-        mq->current_chunk--;
-        c = *mq->current_chunk;
+    if (jl_mutex_trylock_nogc(&mq->chunk_q_lock)) {
+        if (mq->current_chunk != mq->chunk_start) {
+            mq->current_chunk--;
+            c = *mq->current_chunk;
+        }
+        jl_mutex_unlock_nogc(&mq->chunk_q_lock);
     }
     return c;
 }
@@ -2753,7 +2758,6 @@ void gc_mark_loop_(jl_ptls_t ptls, jl_gc_markqueue_t *mq)
         void *new_obj = (void *)gc_markqueue_pop(&ptls->mark_queue);
         // No more objects to mark
         if (__unlikely(new_obj == NULL)) {
-            // TODO: work-stealing comes here...
             return;
         }
         gc_mark_outrefs(ptls, mq, new_obj, 0);
@@ -2789,11 +2793,10 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
     jl_atomic_store(&gc_threads_entered_marking, 1);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     void *new_obj;
+    jl_gc_chunk_t c;
     pop : {
         new_obj = gc_markqueue_pop(mq);
-        // Couldn't get object from own queue: try to
-        // steal from someone else
-        if (new_obj == NULL)
+        if (__unlikely(new_obj == NULL))
             goto steal;
     }
     mark : {
@@ -2801,6 +2804,8 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
         goto pop;
     }
     steal : {
+        // Only choose a random victim when trying to steal a pointer
+        // in the beginning of a stealing cycle
         for (int i = 0; i < 2 * gc_n_threads; i++) {
             uint32_t v = cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % gc_n_threads;
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
@@ -2814,8 +2819,15 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
             if (new_obj != NULL)
                 goto mark;
         }
+        for (int i = 0; i < gc_n_threads; i++) {
+            jl_gc_markqueue_t *mq2 = &gc_all_tls_states[i]->mark_queue;
+            c = gc_chunkqueue_pop(mq2);
+            if (__likely(c.cid != GC_empty_chunk)) {
+                gc_mark_chunk(ptls, mq, &c);
+                goto pop;
+            }
+        }
     }
-    gc_drain_own_chunkqueue(ptls, mq);
     jl_atomic_fetch_add(&gc_n_threads_marking, -1);
 }
 
@@ -3524,6 +3536,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     jl_atomic_store_relaxed(&q->array, a);
     mq->current_chunk = mq->chunk_start = (jl_gc_chunk_t *)malloc_s((1 << 14) * sizeof(jl_gc_chunk_t));
     mq->chunk_end = mq->chunk_start + (1 << 14);
+    jl_mutex_init(&mq->chunk_q_lock);
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     jl_atomic_store_relaxed(&ptls->gc_num.allocd, -(int64_t)gc_num.interval);
