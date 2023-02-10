@@ -49,6 +49,7 @@ STATIC_INLINE ws_array_t *ws_queue_push(ws_queue_t *q, void *v) JL_NOTSAFEPOINT
             new_a->buffer[i % (2 * a->capacity)] = a->buffer[i % a->capacity];
         jl_atomic_store_relaxed(&q->array, new_a);
         old_a = a;
+        a = new_a;
     }
     jl_atomic_store_relaxed((_Atomic(void *) *)&a->buffer[b % a->capacity], v);
     jl_fence_release();
