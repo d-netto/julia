@@ -175,6 +175,7 @@ typedef struct {
     struct _jl_gc_chunk_t *chunk_start;
     struct _jl_gc_chunk_t *current_chunk;
     struct _jl_gc_chunk_t *chunk_end;
+    jl_mutex_t chunk_q_lock;
     ws_queue_t q;
 } jl_gc_markqueue_t;
 
