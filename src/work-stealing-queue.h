@@ -46,7 +46,7 @@ static inline ws_array_t *ws_queue_push(ws_queue_t *q, void *elt) JL_NOTSAFEPOIN
     if (anc.tail == ary->capacity) {
         // Resize queue
         ws_array_t *new_ary = create_ws_array(2 * ary->capacity, sizeof(void *));
-        memcpy(new_ary->buffer, old_ary->buffer, anc.tail * sizeof(void *));
+        memcpy(new_ary->buffer, ary->buffer, anc.tail * sizeof(void *));
         jl_atomic_store_relaxed(&q->array, new_ary);
         old_ary = ary;
         ary = new_ary;

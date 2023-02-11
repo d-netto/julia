@@ -202,14 +202,13 @@ static void gc_verify_track(jl_ptls_t ptls)
         do {
             jl_gc_markqueue_t mq;
             jl_gc_markqueue_t *mq2 = &ptls->mark_queue;
-            mq.current_chunk = mq.chunk_start = mq2->chunk_start;
-            mq.chunk_end = mq2->chunk_end;
-            jl_mutex_init(&mq.chunk_q_lock);
+            ws_anchor_t anc = {0, 0};
+            ws_queue *cq = &mq.cq;
             ws_queue_t *q = &mq.q;
-            jl_atomic_store_relaxed(&q->top, 0);
-            jl_atomic_store_relaxed(&q->bottom, 0);
-            q->array->buffer = mq2->q.array->buffer;
-            q->array->capacity = mq2->q.array->capacity;
+            jl_atomic_store_relaxed(&cq->anchor, anc);
+            jl_atomic_store_relaxed(&cq->array, &mq2->cq.array);
+            jl_atomic_store_relaxed(&q->anchor, anc);
+            jl_atomic_store_relaxed(&q->array, &mq2->q.array);
             arraylist_new(&mq.reclaim_set, 32);
             arraylist_push(&lostval_parents_done, lostval);
             jl_safe_printf("Now looking for %p =======\n", lostval);
@@ -259,14 +258,13 @@ void gc_verify(jl_ptls_t ptls)
     if (jl_n_gcthreads == 0) {
         jl_gc_markqueue_t mq;
         jl_gc_markqueue_t *mq2 = &ptls->mark_queue;
-        mq.current_chunk = mq.chunk_start = mq2->chunk_start;
-        mq.chunk_end = mq2->chunk_end;
-        jl_mutex_init(&mq.chunk_q_lock);
+        ws_anchor_t anc = {0, 0};
+        ws_queue *cq = &mq.cq;
         ws_queue_t *q = &mq.q;
-        jl_atomic_store_relaxed(&q->top, 0);
-        jl_atomic_store_relaxed(&q->bottom, 0);
-        q->array->buffer = mq2->q.array->buffer;
-        q->array->capacity = mq2->q.array->capacity;
+        jl_atomic_store_relaxed(&cq->anchor, anc);
+        jl_atomic_store_relaxed(&cq->array, &mq2->cq.array);
+        jl_atomic_store_relaxed(&q->anchor, anc);
+        jl_atomic_store_relaxed(&q->array, &mq2->q.array);
         arraylist_new(&mq.reclaim_set, 32);
         lostval = NULL;
         lostval_parents.len = 0;
