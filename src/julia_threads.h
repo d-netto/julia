@@ -172,10 +172,7 @@ typedef struct {
 } jl_thread_heap_t;
 
 typedef struct {
-    struct _jl_gc_chunk_t *chunk_start;
-    struct _jl_gc_chunk_t *current_chunk;
-    struct _jl_gc_chunk_t *chunk_end;
-    jl_mutex_t chunk_q_lock;
+    ws_queue_t cq;
     ws_queue_t q;
     arraylist_t reclaim_set;
 } jl_gc_markqueue_t;

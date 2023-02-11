@@ -104,6 +104,8 @@ typedef struct _jl_gc_chunk_t {
 } jl_gc_chunk_t;
 
 #define MAX_REFS_AT_ONCE (1 << 16)
+#define MARK_QUEUE_INIT_SIZE (1 << 18)
+#define CHUNK_QUEUE_INIT_SIZE (1 << 14)
 
 // layout for big (>2k) objects
 
