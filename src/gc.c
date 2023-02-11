@@ -3545,11 +3545,10 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     mq->chunk_end = mq->chunk_start + (1 << 14);
     jl_mutex_init(&mq->chunk_q_lock);
     ws_queue_t *q = &mq->q;
-    jl_atomic_store_relaxed(&q->top, 0);
-    jl_atomic_store_relaxed(&q->bottom, 0);
-    ws_array_t *a =  create_ws_array(1 << 18);
-    jl_atomic_store_relaxed(&q->array, a);
-    arraylist_new(&mq->reclaim_set, 32);
+    ws_anchor_t anc = {0, 0};
+    ws_array_t *wsa2 = create_ws_array((1 << 18), sizeof(void *));
+    jl_atomic_store_relaxed(&q->anchor, anc);
+    jl_atomic_store_relaxed(&q->array, wsa2);
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
     jl_atomic_store_relaxed(&ptls->gc_num.allocd, -(int64_t)gc_num.interval);

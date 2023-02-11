@@ -4,7 +4,7 @@
 #ifndef JL_THREADS_H
 #define JL_THREADS_H
 
-#include "chase-lev-deque.h"
+#include "work-stealing-queue.h"
 #include "julia_atomics.h"
 #ifndef _OS_WINDOWS_
 #include "pthread.h"
