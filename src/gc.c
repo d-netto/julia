@@ -1949,8 +1949,12 @@ STATIC_INLINE void gc_chunkqueue_push(jl_gc_markqueue_t *mq, jl_gc_chunk_t *c) J
     ws_anchor_t anc = jl_atomic_load_acquire(&cq->anchor);
     ws_array_t *ary = jl_atomic_load_relaxed(&cq->array);
     if (anc.tail == ary->capacity) {
-        jl_safe_printf("Chunk queue overflow\n");
-        abort();
+        // Resize queue
+        ws_array_t *new_ary = create_ws_array(2 * ary->capacity, sizeof(jl_gc_chunk_t));
+        memcpy(new_ary->buffer, ary->buffer, anc.tail * sizeof(jl_gc_chunk_t));
+        jl_atomic_store_relaxed(&cq->array, new_ary);
+        arraylist_push(&mq->reclaim_set, ary);
+        ary = new_ary;
     }
     ((jl_gc_chunk_t *)ary->buffer)[anc.tail] = *c;
     anc.tail++;
