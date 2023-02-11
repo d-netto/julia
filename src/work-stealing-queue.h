@@ -20,7 +20,7 @@ typedef struct {
     int64_t capacity;
 } ws_array_t;
 
-static inline ws_array_t *create_ws_array(size_t capacity, size_t eltsz)
+static inline ws_array_t *create_ws_array(size_t capacity, size_t eltsz) JL_NOTSAFEPOINT
 {
     ws_array_t *a = (ws_array_t *)malloc_s(sizeof(ws_array_t));
     a->buffer = (void **)malloc_s(capacity * eltsz);
