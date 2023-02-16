@@ -110,10 +110,11 @@ void JL_NORETURN jl_finish_task(jl_task_t *t);
 
 extern uv_mutex_t gc_threads_lock;
 extern uv_cond_t gc_threads_cond;
-extern _Atomic(uint8_t) jl_gc_marking;
-extern void gc_mark_loop_worker(jl_ptls_t ptls);
-const size_t min_timeout_ms = 2;
-const size_t max_timeout_ms = 32;
+extern _Atomic(uint8_t) gc_n_threads_marking;
+extern void gc_mark_loop2(jl_ptls_t ptls, int master);
+
+extern const size_t min_timeout_ms;
+extern const size_t max_timeout_ms;
 
 // gc thread function
 void jl_gc_threadfun(void *arg)
@@ -132,16 +133,10 @@ void jl_gc_threadfun(void *arg)
 
     while (1) {
         uv_mutex_lock(&gc_threads_lock);
-        uv_cond_wait(&gc_threads_cond, &gc_threads_lock);
+        while (jl_atomic_load(&gc_n_threads_marking) == 0)
+            uv_cond_wait(&gc_threads_cond, &gc_threads_lock);
         uv_mutex_unlock(&gc_threads_lock);
-        int timeout_ms = min_timeout_ms;
-        while (jl_atomic_load(&jl_gc_marking)) {
-            gc_mark_loop_worker(ptls);
-            // Failed to steal: backoff and try later
-            timeout_ms *= 2;
-            if (timeout_ms > max_timeout_ms) timeout_ms = max_timeout_ms;
-            uv_sleep(timeout_ms);
-        }
+        gc_mark_loop2(ptls, 0);
     }
 }
 
