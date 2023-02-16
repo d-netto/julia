@@ -11,12 +11,19 @@
 extern "C" {
 #endif
 
+// Number of GC threads 
 int jl_n_gcthreads;
+
+// Mutex/cond used to synchronize sleep/wakeup of GC threads
 uv_mutex_t gc_threads_lock;
 uv_cond_t gc_threads_cond;
-_Atomic(uint8_t) jl_gc_marking;
-_Atomic(uint8_t) gc_threads_entered_marking;
+
+// Number of threads currently running the GC mark-loop
 _Atomic(uint8_t) gc_n_threads_marking;
+
+// Timeouts for exponential backoff on parallel marking
+const size_t min_timeout_ms = 2;
+const size_t max_timeout_ms = 32;
 
 // Linked list of callback functions
 
@@ -2813,20 +2820,19 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
     gc_drain_own_chunkqueue(ptls, &ptls->mark_queue);
 }
 
-void gc_mark_loop_worker(jl_ptls_t ptls)
+void gc_mark_and_steal(jl_ptls_t ptls)
 {
     jl_atomic_fetch_add(&gc_n_threads_marking, 1);
-    jl_atomic_store(&gc_threads_entered_marking, 1);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     void *new_obj;
     jl_gc_chunk_t c;
     pop : {
         new_obj = gc_markqueue_pop(mq);
-        if (__likely(new_obj != NULL)) {
+        if (new_obj != NULL) {
             goto mark;
         }
         c = gc_chunkqueue_pop(mq);
-        if (__likely(c.cid != GC_empty_chunk)) {
+        if (c.cid != GC_empty_chunk) {
             gc_mark_chunk(ptls, mq, &c);
             goto pop;
         }
@@ -2843,19 +2849,19 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
             uint32_t v = cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % gc_n_threads;
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
             new_obj = gc_markqueue_steal_from(mq2);
-            if (__likely(new_obj != NULL))
+            if (new_obj != NULL)
                 goto mark;
         }
         for (int i = 0; i < gc_n_threads; i++) {
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[i]->mark_queue;
             new_obj = gc_markqueue_steal_from(mq2);
-            if (__likely(new_obj != NULL))
+            if (new_obj != NULL)
                 goto mark;
         }
         for (int i = 0; i < gc_n_threads; i++) {
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[i]->mark_queue;
             c = gc_chunkqueue_steal_from(mq2);
-            if (__likely(c.cid != GC_empty_chunk)) {
+            if (c.cid != GC_empty_chunk) {
                 gc_mark_chunk(ptls, mq, &c);
                 goto pop;
             }
@@ -2864,22 +2870,30 @@ void gc_mark_loop_worker(jl_ptls_t ptls)
     jl_atomic_fetch_add(&gc_n_threads_marking, -1);
 }
 
-void gc_mark_loop_master(jl_ptls_t ptls)
+void gc_mark_loop2(jl_ptls_t ptls, int master)
 {
-    if (jl_n_gcthreads == 0 || gc_heap_snapshot_enabled) {
-        gc_mark_loop(ptls);
-    }
-    else {
-        jl_atomic_store(&gc_threads_entered_marking, 0);
-        jl_atomic_store(&jl_gc_marking, 1);
+    int timeout_ms = min_timeout_ms;
+    if (master) {
         uv_mutex_lock(&gc_threads_lock);
+        jl_atomic_fetch_add(&gc_n_threads_marking, 1);
         uv_cond_broadcast(&gc_threads_cond);
         uv_mutex_unlock(&gc_threads_lock);
-        // Spin while gc threads are marking
-        while (!jl_atomic_load(&gc_threads_entered_marking) || jl_atomic_load(&gc_n_threads_marking) > 0)
-            jl_cpu_pause();
-        jl_atomic_store(&jl_gc_marking, 0);
-        // Clean up `reclaim-sets`
+    }
+    else {
+        jl_atomic_fetch_add(&gc_n_threads_marking, 1);
+    }
+    gc_mark_and_steal(ptls);
+    jl_atomic_fetch_add(&gc_n_threads_marking, -1);
+    // Spin while gc threads are marking
+    while (jl_atomic_load(&gc_n_threads_marking) > 0) {
+        gc_mark_and_steal(ptls);
+        // Failed to steal: backoff and try later
+        timeout_ms *= 2;
+        if (timeout_ms > max_timeout_ms) timeout_ms = max_timeout_ms;
+        uv_sleep(timeout_ms);
+    }
+    // Clean up `reclaim-sets`
+    if (master) {
         for (int i = 0; i < gc_n_threads; i++) {
             jl_ptls_t ptls2 = gc_all_tls_states[i];
             arraylist_t *reclaim_set2 = &ptls2->mark_queue.reclaim_set;
@@ -2889,6 +2903,16 @@ void gc_mark_loop_master(jl_ptls_t ptls)
                 free(a);
             }
         }
+    }
+}
+
+void gc_mark_loop_master(jl_ptls_t ptls)
+{
+    if (jl_n_gcthreads == 0 || gc_heap_snapshot_enabled) {
+        gc_mark_loop(ptls);
+    }
+    else {
+        gc_mark_loop2(ptls, 1);
     }
 }
 
