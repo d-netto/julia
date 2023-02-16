@@ -113,9 +113,6 @@ extern uv_cond_t gc_threads_cond;
 extern _Atomic(uint8_t) gc_n_threads_marking;
 extern void gc_mark_loop2(jl_ptls_t ptls, int master);
 
-extern const size_t min_timeout_ms;
-extern const size_t max_timeout_ms;
-
 // gc thread function
 void jl_gc_threadfun(void *arg)
 {

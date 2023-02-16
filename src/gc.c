@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-// Number of GC threads 
+// Number of GC threads
 int jl_n_gcthreads;
 
 // Mutex/cond used to synchronize sleep/wakeup of GC threads
@@ -20,10 +20,6 @@ uv_cond_t gc_threads_cond;
 
 // Number of threads currently running the GC mark-loop
 _Atomic(uint8_t) gc_n_threads_marking;
-
-// Timeouts for exponential backoff on parallel marking
-const size_t min_timeout_ms = 2;
-const size_t max_timeout_ms = 32;
 
 // Linked list of callback functions
 
@@ -2822,7 +2818,6 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
 
 void gc_mark_and_steal(jl_ptls_t ptls)
 {
-    jl_atomic_fetch_add(&gc_n_threads_marking, 1);
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     void *new_obj;
     jl_gc_chunk_t c;
@@ -2867,30 +2862,26 @@ void gc_mark_and_steal(jl_ptls_t ptls)
             }
         }
     }
-    jl_atomic_fetch_add(&gc_n_threads_marking, -1);
 }
 
 void gc_mark_loop2(jl_ptls_t ptls, int master)
 {
-    int timeout_ms = min_timeout_ms;
     if (master) {
+        // Wake threads up and try to do some work
         uv_mutex_lock(&gc_threads_lock);
         jl_atomic_fetch_add(&gc_n_threads_marking, 1);
         uv_cond_broadcast(&gc_threads_cond);
         uv_mutex_unlock(&gc_threads_lock);
-    }
-    else {
-        jl_atomic_fetch_add(&gc_n_threads_marking, 1);
-    }
-    gc_mark_and_steal(ptls);
-    jl_atomic_fetch_add(&gc_n_threads_marking, -1);
-    // Spin while gc threads are marking
-    while (jl_atomic_load(&gc_n_threads_marking) > 0) {
         gc_mark_and_steal(ptls);
-        // Failed to steal: backoff and try later
-        timeout_ms *= 2;
-        if (timeout_ms > max_timeout_ms) timeout_ms = max_timeout_ms;
-        uv_sleep(timeout_ms);
+        jl_atomic_fetch_add(&gc_n_threads_marking, -1);
+    }
+    while (jl_atomic_load(&gc_n_threads_marking) > 0) {
+        // Try to become a thief while other threads are marking
+        jl_atomic_fetch_add(&gc_n_threads_marking, 1);
+        gc_mark_and_steal(ptls);
+        jl_atomic_fetch_add(&gc_n_threads_marking, -1);
+        // Failed to steal: go to sleep for 1ms and try later
+        uv_sleep(1);
     }
     // Clean up `reclaim-sets`
     if (master) {
