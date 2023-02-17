@@ -85,7 +85,7 @@ typedef struct {
 } jl_gc_num_t;
 
 typedef enum {
-    GC_empty_chunk,
+    GC_empty_chunk = 0,
     GC_objary_chunk,
     GC_ary8_chunk,
     GC_ary16_chunk,

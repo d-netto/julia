@@ -1924,7 +1924,7 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
 // Push a work item to the queue
 STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
 {
-    ws_array_t *old_a = ws_queue_push(&mq->q, obj);
+    ws_array_t *old_a = ws_queue_push(&mq->q, &obj, sizeof(void *));
     if (__unlikely(old_a != NULL))
         arraylist_push(&mq->reclaim_set, old_a);
 }
@@ -1932,72 +1932,40 @@ STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_
 // Pop from the mark queue
 STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 {
-    return (jl_value_t *)ws_queue_pop(&mq->q);
+    jl_value_t *v = NULL;
+    ws_queue_pop(&mq->q, &v, sizeof(void *));
+    return v;
 }
 
 // Steal from `mq2`
 STATIC_INLINE jl_value_t *gc_markqueue_steal_from(jl_gc_markqueue_t *mq2)
 {
-    return (jl_value_t *)ws_queue_steal_from(&mq2->q);
+    jl_value_t *v = NULL;
+    ws_queue_steal_from(&mq2->q, &v, sizeof(void *));
+    return v;
 }
-
-// Chunk-queue functions are almost verbatim copied from `work-stealing-queue.h`.
-// Could be made less repetitive with the use of an extra element size parameter
-// passed to the functions in `work-stealing-queue.h`, at the expense of debuggability
 
 // Push chunk `*c` into chunk queue
 STATIC_INLINE void gc_chunkqueue_push(jl_gc_markqueue_t *mq, jl_gc_chunk_t *c) JL_NOTSAFEPOINT
 {
-    ws_queue_t *cq = &mq->cq;
-    ws_anchor_t anc = jl_atomic_load_acquire(&cq->anchor);
-    ws_array_t *ary = jl_atomic_load_relaxed(&cq->array);
-    if (anc.tail == ary->capacity) {
-        // Resize queue
-        ws_array_t *new_ary = create_ws_array(2 * ary->capacity, sizeof(jl_gc_chunk_t));
-        memcpy(new_ary->buffer, ary->buffer, anc.tail * sizeof(jl_gc_chunk_t));
-        jl_atomic_store_relaxed(&cq->array, new_ary);
-        arraylist_push(&mq->reclaim_set, ary);
-        ary = new_ary;
-    }
-    ((jl_gc_chunk_t *)ary->buffer)[anc.tail] = *c;
-    anc.tail++;
-    anc.tag++;
-    jl_atomic_store_release(&cq->anchor, anc);
+    ws_array_t *old_a = ws_queue_push(&mq->cq, c, sizeof(jl_gc_chunk_t));
+    if (__unlikely(old_a != NULL))
+        arraylist_push(&mq->reclaim_set, old_a);
 }
 
 // Pop chunk from chunk queue
 STATIC_INLINE jl_gc_chunk_t gc_chunkqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
-    ws_queue_t *cq = &mq->cq;
     jl_gc_chunk_t c = {.cid = GC_empty_chunk};
-    ws_anchor_t anc = jl_atomic_load_acquire(&cq->anchor);
-    ws_array_t *ary = jl_atomic_load_relaxed(&cq->array);
-    if (anc.tail == 0)
-        // Empty queue
-        return c;
-    anc.tail--;
-    c = ((jl_gc_chunk_t *)ary->buffer)[anc.tail];
-    jl_atomic_store_release(&cq->anchor, anc);
+    ws_queue_steal_from(&mq->cq, &c, sizeof(jl_gc_chunk_t));
     return c;
 }
 
 // Steal chunk from `mq2`
 STATIC_INLINE jl_gc_chunk_t gc_chunkqueue_steal_from(jl_gc_markqueue_t *mq2) JL_NOTSAFEPOINT
 {
-    ws_queue_t *cq = &mq2->cq;
     jl_gc_chunk_t c = {.cid = GC_empty_chunk};
-    ws_anchor_t anc = jl_atomic_load_acquire(&cq->anchor);
-    ws_array_t *ary = jl_atomic_load_acquire(&cq->array);
-    if (anc.tail == 0)
-        // Empty queue
-        return c;
-    c = ((jl_gc_chunk_t *)ary->buffer)[anc.tail - 1];
-    ws_anchor_t anc2 = {anc.tail - 1, anc.tag};
-    if (!jl_atomic_cmpswap(&cq->anchor, &anc, anc2)) {
-        // Steal failed
-        c.cid = GC_empty_chunk;
-        return c;
-    }
+    ws_queue_steal_from(&mq2->cq, &c, sizeof(jl_gc_chunk_t));
     return c;
 }
 
@@ -3593,7 +3561,7 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     jl_atomic_store_relaxed(&cq->anchor, anc);
     jl_atomic_store_relaxed(&cq->array, wsa);
     ws_queue_t *q = &mq->q;
-    ws_array_t *wsa2 = create_ws_array(MARK_QUEUE_INIT_SIZE, sizeof(void *));
+    ws_array_t *wsa2 = create_ws_array(MARK_QUEUE_INIT_SIZE, sizeof(jl_gc_chunk_t));
     jl_atomic_store_relaxed(&q->anchor, anc);
     jl_atomic_store_relaxed(&q->array, wsa2);
 
