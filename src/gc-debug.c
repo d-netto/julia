@@ -199,7 +199,7 @@ static void restore(void)
 static void gc_verify_track(jl_ptls_t ptls)
 {
     // `gc_verify_track` is limited to single-threaded GC
-    if (jl_n_gcthreads == 0)
+    if (jl_n_gcthreads != 0)
         return;
     do {
         jl_gc_markqueue_t mq;
@@ -257,7 +257,7 @@ static void gc_verify_track(jl_ptls_t ptls)
 void gc_verify(jl_ptls_t ptls)
 {
     // `gc_verify` is limited to single-threaded GC
-    if (jl_n_gcthreads == 0)
+    if (jl_n_gcthreads != 0)
         return;
     jl_gc_markqueue_t mq;
     jl_gc_markqueue_t *mq2 = &ptls->mark_queue;
