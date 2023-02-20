@@ -1925,12 +1925,13 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
 STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
 {
     ws_array_t *old_a = ws_queue_push(&mq->q, &obj, sizeof(void *));
+    // Put `old_a` in `reclaim_set` to be freed after the mark phase
     if (__unlikely(old_a != NULL))
         arraylist_push(&mq->reclaim_set, old_a);
 }
 
 // Pop from the mark queue
-STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
+STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
     jl_value_t *v = NULL;
     ws_queue_pop(&mq->q, &v, sizeof(void *));
@@ -1938,7 +1939,7 @@ STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq)
 }
 
 // Steal from `mq2`
-STATIC_INLINE jl_value_t *gc_markqueue_steal_from(jl_gc_markqueue_t *mq2)
+STATIC_INLINE jl_value_t *gc_markqueue_steal_from(jl_gc_markqueue_t *mq2) JL_NOTSAFEPOINT
 {
     jl_value_t *v = NULL;
     ws_queue_steal_from(&mq2->q, &v, sizeof(void *));
@@ -1949,6 +1950,7 @@ STATIC_INLINE jl_value_t *gc_markqueue_steal_from(jl_gc_markqueue_t *mq2)
 STATIC_INLINE void gc_chunkqueue_push(jl_gc_markqueue_t *mq, jl_gc_chunk_t *c) JL_NOTSAFEPOINT
 {
     ws_array_t *old_a = ws_queue_push(&mq->cq, c, sizeof(jl_gc_chunk_t));
+    // Put `old_a` in `reclaim_set` to be freed after the mark phase
     if (__unlikely(old_a != NULL))
         arraylist_push(&mq->reclaim_set, old_a);
 }
@@ -2851,8 +2853,8 @@ void gc_mark_loop2(jl_ptls_t ptls, int master)
         // Failed to steal: go to sleep for 1ms and try later
         uv_sleep(1);
     }
-    // Clean up `reclaim-sets`
     if (master) {
+        // Clean up `reclaim-sets`
         for (int i = 0; i < gc_n_threads; i++) {
             jl_ptls_t ptls2 = gc_all_tls_states[i];
             arraylist_t *reclaim_set2 = &ptls2->mark_queue.reclaim_set;
