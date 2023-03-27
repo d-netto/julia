@@ -3131,7 +3131,6 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
     JL_PROBE_GC_MARK_BEGIN();
     {
         JL_TIMING(GC, Mark);
-
         // 1. fix GC bits of objects in the remset.
         assert(gc_n_threads);
         for (int t_i = 0; t_i < gc_n_threads; t_i++) {
@@ -3141,16 +3140,18 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         }
 
         assert(gc_n_threads);
+        int single_threaded = (jl_n_gcthreads == 0 || gc_heap_snapshot_enabled);
         for (int t_i = 0; t_i < gc_n_threads; t_i++) {
             jl_ptls_t ptls2 = gc_all_tls_states[t_i];
             if (ptls2 != NULL) {
+                jl_gc_markqueue_t *mq2 = single_threaded ? &ptls->mark_queue : &ptls2->mark_queue;
                 // 2.1. mark every thread local root
-                gc_queue_thread_local(mq, ptls2);
+                gc_queue_thread_local(mq2, ptls2);
                 // 2.2. mark any managed objects in the backtrace buffer
                 // TODO: treat these as roots for gc_heap_snapshot_record
-                gc_queue_bt_buf(mq, ptls2);
+                gc_queue_bt_buf(mq2, ptls2);
                 // 2.3. mark every object in the `last_remsets` and `rem_binding`
-                gc_queue_remset(ptls, ptls2);
+                gc_queue_remset(single_threaded ? ptls : ptls2, ptls2);
             }
         }
 
