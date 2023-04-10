@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 // =======
-// Idempotent work-stealing deque
+// Idempotent work-stealing stack
 //
 // * Michael M. M. et al. Idempotent Work Stealing
 // =======
