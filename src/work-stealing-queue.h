@@ -17,14 +17,16 @@ extern "C" {
 
 typedef struct {
     char *buffer;
-    int64_t capacity;
+    int32_t capacity;
+    int32_t eltsz;
 } ws_array_t;
 
-static inline ws_array_t *create_ws_array(size_t capacity, size_t eltsz) JL_NOTSAFEPOINT
+static inline ws_array_t *create_ws_array(size_t capacity, int32_t eltsz) JL_NOTSAFEPOINT
 {
     ws_array_t *a = (ws_array_t *)malloc_s(sizeof(ws_array_t));
     a->buffer = (char *)malloc_s(capacity * eltsz);
     a->capacity = capacity;
+    a->eltsz = eltsz;
     return a;
 }
 
@@ -38,27 +40,27 @@ typedef struct {
     _Atomic(ws_array_t *) array;
 } ws_queue_t;
 
-static inline ws_array_t *ws_queue_push(ws_queue_t *q, void *elt, size_t eltsz) JL_NOTSAFEPOINT
+static inline ws_array_t *ws_queue_push(ws_queue_t *q, void *elt) JL_NOTSAFEPOINT
 {
     ws_anchor_t anc = jl_atomic_load_acquire(&q->anchor);
     ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
     ws_array_t *old_ary = NULL;
     if (anc.tail == ary->capacity) {
         // Resize queue
-        ws_array_t *new_ary = create_ws_array(2 * ary->capacity, eltsz);
-        memcpy(new_ary->buffer, ary->buffer, anc.tail * eltsz);
+        ws_array_t *new_ary = create_ws_array(2 * ary->capacity, ary->eltsz);
+        memcpy(new_ary->buffer, ary->buffer, anc.tail * ary->eltsz);
         jl_atomic_store_relaxed(&q->array, new_ary);
         old_ary = ary;
         ary = new_ary;
     }
-    memcpy(ary->buffer + anc.tail * eltsz, elt, eltsz);
+    memcpy(ary->buffer + anc.tail * ary->eltsz, elt, ary->eltsz);
     anc.tail++;
     anc.tag++;
     jl_atomic_store_release(&q->anchor, anc);
     return old_ary;
 }
 
-static inline void ws_queue_pop(ws_queue_t *q, void *dest, size_t eltsz) JL_NOTSAFEPOINT
+static inline void ws_queue_pop(ws_queue_t *q, void *dest) JL_NOTSAFEPOINT
 {
     ws_anchor_t anc = jl_atomic_load_acquire(&q->anchor);
     ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
@@ -66,22 +68,22 @@ static inline void ws_queue_pop(ws_queue_t *q, void *dest, size_t eltsz) JL_NOTS
         // Empty queue
         return;
     anc.tail--;
-    memcpy(dest, ary->buffer + anc.tail * eltsz, eltsz);
+    memcpy(dest, ary->buffer + anc.tail * ary->eltsz, ary->eltsz);
     jl_atomic_store_release(&q->anchor, anc);
 }
 
-static inline void ws_queue_steal_from(ws_queue_t *q, void *dest, size_t eltsz) JL_NOTSAFEPOINT
+static inline void ws_queue_steal_from(ws_queue_t *q, void *dest) JL_NOTSAFEPOINT
 {
     ws_anchor_t anc = jl_atomic_load_acquire(&q->anchor);
     ws_array_t *ary = jl_atomic_load_acquire(&q->array);
     if (anc.tail == 0)
         // Empty queue
         return;
-    memcpy(dest, ary->buffer + (anc.tail - 1) * eltsz, eltsz);
+    memcpy(dest, ary->buffer + (anc.tail - 1) * ary->eltsz, ary->eltsz);
     ws_anchor_t anc2 = {anc.tail - 1, anc.tag};
     if (!jl_atomic_cmpswap(&q->anchor, &anc, anc2)) {
         // Steal failed
-        memset(dest, 0, eltsz);
+        memset(dest, 0, ary->eltsz);
         return;
     }
 }

@@ -129,7 +129,7 @@ static const char opts[]  =
     "                           interface if supported (Linux and Windows) or to the number of CPU\n"
     "                           threads if not supported (MacOS) or if process affinity is not\n"
     "                           configured, and sets M to 1.\n"
-    " --gc=N                    Enable N gc threads\n"
+    " --gcthreads=N             Start and use N threads for GC, 1 if unspecified.\n"
     " -p, --procs {N|auto}      Integer value N launches N additional local worker processes\n"
     "                           \"auto\" launches as many workers as the number of local CPU threads (logical cores)\n"
     " --machine-file <file>     Run processes on hosts listed in <file>\n\n"
@@ -278,7 +278,7 @@ JL_DLLEXPORT void jl_parse_opts(int *argcp, char ***argvp)
         { "cpu-target",      required_argument, 0, 'C' },
         { "procs",           required_argument, 0, 'p' },
         { "threads",         required_argument, 0, 't' },
-        { "gc",              required_argument, 0, opt_gc_threads },
+        { "gcthreads",       required_argument, 0, opt_gc_threads },
         { "machine-file",    required_argument, 0, opt_machine_file },
         { "project",         optional_argument, 0, opt_project },
         { "color",           required_argument, 0, opt_color },
@@ -825,7 +825,7 @@ restart_switch:
                 jl_options.ngcthreads = atoi(optarg);
             }
             if (jl_options.ngcthreads == 0)
-                jl_errorf("julia: invalid argument to --gc without number of threads specified");
+                jl_errorf("julia: invalid argument to --gcthreads without number of threads specified");
 
             break;
         default:
