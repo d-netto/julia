@@ -257,8 +257,10 @@ static void gc_verify_track(jl_ptls_t ptls)
 void gc_verify(jl_ptls_t ptls)
 {
     // `gc_verify` is limited to single-threaded GC
-    if (jl_n_gcthreads != 0)
+    if (jl_n_gcthreads != 0) {
+        jl_safe_printf("Warn. GC verify disabled in multi-threaded GC\n");
         return;
+    }
     jl_gc_markqueue_t mq;
     jl_gc_markqueue_t *mq2 = &ptls->mark_queue;
     ws_anchor_t anc = {0, 0};

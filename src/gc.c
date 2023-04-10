@@ -1924,7 +1924,7 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
 // Push a work item to the queue
 STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
 {
-    ws_array_t *old_a = ws_queue_push(&mq->q, &obj, sizeof(void *));
+    ws_array_t *old_a = ws_queue_push(&mq->q, &obj);
     // Put `old_a` in `reclaim_set` to be freed after the mark phase
     if (__unlikely(old_a != NULL))
         arraylist_push(&mq->reclaim_set, old_a);
@@ -1934,7 +1934,7 @@ STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_
 STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
     jl_value_t *v = NULL;
-    ws_queue_pop(&mq->q, &v, sizeof(void *));
+    ws_queue_pop(&mq->q, &v);
     return v;
 }
 
@@ -1942,14 +1942,14 @@ STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOIN
 STATIC_INLINE jl_value_t *gc_markqueue_steal_from(jl_gc_markqueue_t *mq2) JL_NOTSAFEPOINT
 {
     jl_value_t *v = NULL;
-    ws_queue_steal_from(&mq2->q, &v, sizeof(void *));
+    ws_queue_steal_from(&mq2->q, &v);
     return v;
 }
 
 // Push chunk `*c` into chunk queue
 STATIC_INLINE void gc_chunkqueue_push(jl_gc_markqueue_t *mq, jl_gc_chunk_t *c) JL_NOTSAFEPOINT
 {
-    ws_array_t *old_a = ws_queue_push(&mq->cq, c, sizeof(jl_gc_chunk_t));
+    ws_array_t *old_a = ws_queue_push(&mq->cq, c);
     // Put `old_a` in `reclaim_set` to be freed after the mark phase
     if (__unlikely(old_a != NULL))
         arraylist_push(&mq->reclaim_set, old_a);
@@ -1959,7 +1959,7 @@ STATIC_INLINE void gc_chunkqueue_push(jl_gc_markqueue_t *mq, jl_gc_chunk_t *c) J
 STATIC_INLINE jl_gc_chunk_t gc_chunkqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
     jl_gc_chunk_t c = {.cid = GC_empty_chunk};
-    ws_queue_steal_from(&mq->cq, &c, sizeof(jl_gc_chunk_t));
+    ws_queue_steal_from(&mq->cq, &c);
     return c;
 }
 
@@ -1967,7 +1967,7 @@ STATIC_INLINE jl_gc_chunk_t gc_chunkqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEP
 STATIC_INLINE jl_gc_chunk_t gc_chunkqueue_steal_from(jl_gc_markqueue_t *mq2) JL_NOTSAFEPOINT
 {
     jl_gc_chunk_t c = {.cid = GC_empty_chunk};
-    ws_queue_steal_from(&mq2->cq, &c, sizeof(jl_gc_chunk_t));
+    ws_queue_steal_from(&mq2->cq, &c);
     return c;
 }
 
