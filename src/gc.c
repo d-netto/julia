@@ -1959,7 +1959,7 @@ STATIC_INLINE void gc_chunkqueue_push(jl_gc_markqueue_t *mq, jl_gc_chunk_t *c) J
 STATIC_INLINE jl_gc_chunk_t gc_chunkqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
     jl_gc_chunk_t c = {.cid = GC_empty_chunk};
-    ws_queue_steal_from(&mq->cq, &c);
+    ws_queue_pop(&mq->cq, &c);
     return c;
 }
 
@@ -3257,7 +3257,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         size_t maxmem = 0;
 #ifdef _P64
         // on a big memory machine, increase max_collect_interval to totalmem / nthreads / 2
-        maxmem = total_mem / gc_n_threads / 2;
+        maxmem = total_mem / (gc_n_threads - jl_n_gcthreads) / 2;
 #endif
         if (maxmem < max_collect_interval)
             maxmem = max_collect_interval;
