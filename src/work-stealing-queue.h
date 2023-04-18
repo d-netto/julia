@@ -49,7 +49,7 @@ static inline ws_array_t *ws_queue_push(ws_queue_t *q, void *elt) JL_NOTSAFEPOIN
         // Resize queue
         ws_array_t *new_ary = create_ws_array(2 * ary->capacity, ary->eltsz);
         memcpy(new_ary->buffer, ary->buffer, anc.tail * ary->eltsz);
-        jl_atomic_store_relaxed(&q->array, new_ary);
+        jl_atomic_store_release(&q->array, new_ary);
         old_ary = ary;
         ary = new_ary;
     }
@@ -75,7 +75,7 @@ static inline void ws_queue_pop(ws_queue_t *q, void *dest) JL_NOTSAFEPOINT
 static inline void ws_queue_steal_from(ws_queue_t *q, void *dest) JL_NOTSAFEPOINT
 {
     ws_anchor_t anc = jl_atomic_load_acquire(&q->anchor);
-    ws_array_t *ary = jl_atomic_load_acquire(&q->array);
+    ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
     if (anc.tail == 0)
         // Empty queue
         return;
