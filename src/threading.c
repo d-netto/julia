@@ -704,7 +704,8 @@ void jl_start_threads(void)
                 uv_thread_setaffinity(&uvtid, mask, NULL, cpumasksize);
                 mask[i] = 0;
             }
-        } else {
+        }
+        else {
             uv_thread_create(&uvtid, jl_gc_threadfun, t);
         }
         uv_thread_detach(&uvtid);
