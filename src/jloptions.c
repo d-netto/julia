@@ -821,12 +821,11 @@ restart_switch:
 
             break;
         case opt_gc_threads:
-            if (optarg != NULL) {
-                jl_options.ngcthreads = atoi(optarg);
-            }
-            if (jl_options.ngcthreads == 0)
-                jl_errorf("julia: invalid argument to --gcthreads without number of threads specified");
-
+            errno = 0;
+            long ngcthreads = strtol(optarg, &endptr, 10);
+            if (errno != 0 || optarg == endptr || *endptr != 0 || ngcthreads < 1 || ngcthreads >= INT8_MAX)
+                jl_errorf("julia: --gcthreads=<n>; n must be an integer >= 1");
+            jl_options.ngcthreads = (int8_t)ngcthreads;
             break;
         default:
             jl_errorf("julia: unhandled option -- %c\n"
