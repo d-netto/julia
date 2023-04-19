@@ -2834,8 +2834,25 @@ void gc_mark_and_steal(jl_ptls_t ptls)
     }
 }
 
+#define GC_BACKOFF
+#define GC_BACKOFF_START 2
+#define GC_BACKOFF_END   8
+
+void gc_mark_backoff(int *i)
+{
+#ifdef GC_BACKOFF
+    if (*i < GC_BACKOFF_END) {
+        (*i)++;
+    }
+    for (int j = 0; j < (1 << *i); j++) jl_cpu_pause();
+#else
+    uv_sleep(1);
+#endif
+}
+
 void gc_mark_loop2(jl_ptls_t ptls, int master)
 {
+    int i = GC_BACKOFF_START;
     if (master) {
         // Wake threads up and try to do some work
         uv_mutex_lock(&gc_threads_lock);
@@ -2850,8 +2867,8 @@ void gc_mark_loop2(jl_ptls_t ptls, int master)
         jl_atomic_fetch_add(&gc_n_threads_marking, 1);
         gc_mark_and_steal(ptls);
         jl_atomic_fetch_add(&gc_n_threads_marking, -1);
-        // Failed to steal: go to sleep for 1ms and try later
-        uv_sleep(1);
+        // Failed to steal
+        gc_mark_backoff(&i);
     }
     if (master) {
         // Clean up `reclaim-sets`
