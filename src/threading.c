@@ -697,7 +697,7 @@ void jl_start_threads(void)
         jl_threadarg_t *t = (jl_threadarg_t *)malloc_s(sizeof(jl_threadarg_t)); // ownership will be passed to the thread
         t->tid = i;
         t->barrier = &thread_init_done;
-        if (i <= nworker_threads){
+        if (i < nworker_threads){
             uv_thread_create(&uvtid, jl_threadfun, t);
             if (exclusive) {
                 mask[i] = 1;
