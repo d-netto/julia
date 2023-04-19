@@ -686,20 +686,22 @@ void jl_start_threads(void)
     // create threads
     uv_barrier_init(&thread_init_done, nthreads);
 
+    // GC/System threads need to be after the worker threads.
+    int nworker_threads = nthreads - ngcthreads;
+
     for (i = 1; i < nthreads; ++i) {
         jl_threadarg_t *t = (jl_threadarg_t *)malloc_s(sizeof(jl_threadarg_t)); // ownership will be passed to the thread
         t->tid = i;
         t->barrier = &thread_init_done;
-        if (i <= ngcthreads) {
-            uv_thread_create(&uvtid, jl_gc_threadfun, t);
-        }
-        else {
+        if (i <= nworker_threads){
             uv_thread_create(&uvtid, jl_threadfun, t);
             if (exclusive) {
                 mask[i] = 1;
                 uv_thread_setaffinity(&uvtid, mask, NULL, cpumasksize);
                 mask[i] = 0;
             }
+        } else {
+            uv_thread_create(&uvtid, jl_gc_threadfun, t);
         }
         uv_thread_detach(&uvtid);
     }
