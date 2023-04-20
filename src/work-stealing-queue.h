@@ -23,7 +23,6 @@ typedef struct {
     char *buffer;
     int32_t capacity;
     int32_t mask;
-    int32_t eltsz;
 } ws_array_t;
 
 static inline ws_array_t *create_ws_array(size_t capacity, int32_t eltsz) JL_NOTSAFEPOINT
@@ -32,7 +31,6 @@ static inline ws_array_t *create_ws_array(size_t capacity, int32_t eltsz) JL_NOT
     a->buffer = (char *)malloc_s(capacity * eltsz);
     a->capacity = capacity;
     a->mask = capacity - 1;
-    a->eltsz = eltsz;
     return a;
 }
 
@@ -47,13 +45,12 @@ static inline ws_array_t *ws_queue_push(ws_queue_t *q, void *elt, int32_t eltsz)
     int64_t b = jl_atomic_load_relaxed(&q->bottom);
     int64_t t = jl_atomic_load_acquire(&q->top);
     ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
-    assert(ary->eltsz == eltsz);
     ws_array_t *old_ary = NULL;
     if (__unlikely(b - t > ary->capacity - 1)) {
         ws_array_t *new_ary = create_ws_array(2 * ary->capacity, eltsz);
-        for (int i = 0; i < ary->capacity; i++)
-            memcpy(new_ary->buffer + ((t + i) & new_ary->mask) * eltsz,
-                    ary->buffer + ((t + i) & ary->mask) * eltsz, eltsz);
+        for (int i = 0; i < ary->capacity; i++) {
+            memcpy(new_ary->buffer + ((t + i) & new_ary->mask) * eltsz, ary->buffer + ((t + i) & ary->mask) * eltsz, eltsz);
+        }
         jl_atomic_store_release(&q->array, new_ary);
         old_ary = ary;
         ary = new_ary;
@@ -68,7 +65,6 @@ static inline void ws_queue_pop(ws_queue_t *q, void *dest, int32_t eltsz) JL_NOT
 {
     int64_t b = jl_atomic_load_relaxed(&q->bottom) - 1;
     ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
-    assert(ary->eltsz == eltsz);
     jl_atomic_store_relaxed(&q->bottom, b);
     jl_fence();
     int64_t t = jl_atomic_load_relaxed(&q->top);
@@ -93,7 +89,6 @@ static inline void ws_queue_steal_from(ws_queue_t *q, void *dest, int32_t eltsz)
     int64_t b = jl_atomic_load_acquire(&q->bottom);
     if (t < b) {
         ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
-        assert(ary->eltsz == eltsz);
         memcpy(dest, ary->buffer + (t & ary->mask) * eltsz, eltsz);
         if (!jl_atomic_cmpswap(&q->top, &t, t + 1))
             memset(dest, 0, eltsz);
