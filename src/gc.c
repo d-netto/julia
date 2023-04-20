@@ -2107,8 +2107,24 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
     }
     size_t too_big = (obj_end - obj_begin) / MAX_REFS_AT_ONCE > step; // use this order of operations to avoid idiv
     jl_value_t **scan_end = obj_end;
+    int pushed_chunk = 0;
     if (too_big) {
         scan_end = obj_begin + step * MAX_REFS_AT_ONCE;
+        // case 1:
+        //      array owner is young, so we won't need to scan through all its elements
+        //      to know that we will never need to push it to the remset. it's fine
+        //      to create a chunk with "incorrect" `nptr` and push it to the chunk-queue
+        //      ASAP in order to expose as much parallelism as possible
+        // case 2:
+        //      lowest two bits of `nptr` are already set to 0x3, so won't change after scanning the array
+        //       elements
+        if ((nptr & 0x2) != 0x2 || (nptr & 0x3) == 0x3) {
+            jl_gc_chunk_t c = {GC_objary_chunk, obj_parent, scan_end,
+                                obj_end,      NULL,       NULL,
+                                step,         nptr};
+            gc_chunkqueue_push(mq, &c);
+            pushed_chunk = 1;
+        }
     }
     for (; obj_begin < scan_end; obj_begin += step) {
         new_obj = *obj_begin;
@@ -2120,10 +2136,12 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
         }
     }
     if (too_big) {
-        jl_gc_chunk_t c = {GC_objary_chunk, obj_parent, scan_end,
-                            obj_end,      NULL,       NULL,
-                            step,         nptr};
-        gc_chunkqueue_push(mq, &c);
+        if (!pushed_chunk) {
+            jl_gc_chunk_t c = {GC_objary_chunk, obj_parent, scan_end,
+                                obj_end,      NULL,       NULL,
+                                step,         nptr};
+            gc_chunkqueue_push(mq, &c);
+        }
     }
     else {
         gc_mark_push_remset(ptls, obj_parent, nptr);
@@ -2167,8 +2185,24 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent, jl_va
     }
     size_t too_big = (ary8_end - ary8_begin) / MAX_REFS_AT_ONCE > elsize; // use this order of operations to avoid idiv
     jl_value_t **scan_end = ary8_end;
+    int pushed_chunk = 0;
     if (too_big) {
         scan_end = ary8_begin + elsize * MAX_REFS_AT_ONCE;
+        // case 1:
+        //      array owner is young, so we won't need to scan through all its elements
+        //      to know that we will never need to push it to the remset. it's fine
+        //      to create a chunk with "incorrect" `nptr` and push it to the chunk-queue
+        //      ASAP in order to expose as much parallelism as possible
+        // case 2:
+        //      lowest two bits of `nptr` are already set to 0x3, so won't change after scanning the array
+        //       elements
+        if ((nptr & 0x2) != 0x2 || (nptr & 0x3) == 0x3) {
+            jl_gc_chunk_t c = {GC_objary_chunk, ary8_parent, scan_end,
+                            ary8_end,        elem_begin,       elem_end,
+                            0,               nptr};
+            gc_chunkqueue_push(mq, &c);
+            pushed_chunk = 1;
+        }
     }
     for (; ary8_begin < ary8_end; ary8_begin += elsize) {
         for (uint8_t *pindex = elem_begin; pindex < elem_end; pindex++) {
@@ -2182,10 +2216,12 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent, jl_va
         }
     }
     if (too_big) {
-        jl_gc_chunk_t c = {GC_objary_chunk, ary8_parent, scan_end,
-                           ary8_end,        elem_begin,       elem_end,
-                           0,               nptr};
-        gc_chunkqueue_push(mq, &c);
+        if (!pushed_chunk) {
+            jl_gc_chunk_t c = {GC_objary_chunk, ary8_parent, scan_end,
+                            ary8_end,        elem_begin,       elem_end,
+                            0,               nptr};
+            gc_chunkqueue_push(mq, &c);
+        }
     }
     else {
         gc_mark_push_remset(ptls, ary8_parent, nptr);
@@ -2229,8 +2265,24 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent, jl_
     }
     size_t too_big = (ary16_end - ary16_begin) / MAX_REFS_AT_ONCE > elsize; // use this order of operations to avoid idiv
     jl_value_t **scan_end = ary16_end;
+    int pushed_chunk = 0;
     if (too_big) {
         scan_end = ary16_begin + elsize * MAX_REFS_AT_ONCE;
+        // case 1:
+        //      array owner is young, so we won't need to scan through all its elements
+        //      to know that we will never need to push it to the remset. it's fine
+        //      to create a chunk with "incorrect" `nptr` and push it to the chunk-queue
+        //      ASAP in order to expose as much parallelism as possible
+        // case 2:
+        //      lowest two bits of `nptr` are already set to 0x3, so won't change after scanning the array
+        //       elements
+        if ((nptr & 0x2) != 0x2 || (nptr & 0x3) == 0x3) {
+            jl_gc_chunk_t c = {GC_objary_chunk, ary16_parent, scan_end,
+                                ary16_end,      elem_begin,       elem_end,
+                                elsize,         nptr};
+            gc_chunkqueue_push(mq, &c);
+            pushed_chunk = 1;
+        }
     }
     for (; ary16_begin < scan_end; ary16_begin += elsize) {
         for (uint16_t *pindex = elem_begin; pindex < elem_end; pindex++) {
@@ -2244,10 +2296,12 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent, jl_
         }
     }
     if (too_big) {
-        jl_gc_chunk_t c = {GC_objary_chunk, ary16_parent, scan_end,
-                            ary16_end,      elem_begin,       elem_end,
-                            elsize,         nptr};
-        gc_chunkqueue_push(mq, &c);
+        if (!pushed_chunk) {
+            jl_gc_chunk_t c = {GC_objary_chunk, ary16_parent, scan_end,
+                                ary16_end,      elem_begin,       elem_end,
+                                elsize,         nptr};
+            gc_chunkqueue_push(mq, &c);
+        }
     }
     else {
         gc_mark_push_remset(ptls, ary16_parent, nptr);
