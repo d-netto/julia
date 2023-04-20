@@ -2115,7 +2115,7 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
         // to create a chunk with "incorrect" `nptr` and push it to the chunk-queue
         // ASAP in order to expose as much parallelism as possible
         // case 2: lowest two bits of `nptr` are already set to 0x3, so won't change after
-        // scanning the arrayelements
+        // scanning the array elements
         if ((nptr & 0x2) != 0x2 || (nptr & 0x3) == 0x3) {
             jl_gc_chunk_t c = {GC_objary_chunk, obj_parent, scan_end,
                                 obj_end,      NULL,       NULL,
@@ -2191,7 +2191,7 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent, jl_va
         // to create a chunk with "incorrect" `nptr` and push it to the chunk-queue
         // ASAP in order to expose as much parallelism as possible
         // case 2: lowest two bits of `nptr` are already set to 0x3, so won't change after
-        // scanning the arrayelements
+        // scanning the array elements
         if ((nptr & 0x2) != 0x2 || (nptr & 0x3) == 0x3) {
             jl_gc_chunk_t c = {GC_objary_chunk, ary8_parent, scan_end,
                             ary8_end,        elem_begin,       elem_end,
@@ -2269,7 +2269,7 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent, jl_
         // to create a chunk with "incorrect" `nptr` and push it to the chunk-queue
         // ASAP in order to expose as much parallelism as possible
         // case 2: lowest two bits of `nptr` are already set to 0x3, so won't change after
-        // scanning the arrayelements
+        // scanning the array elements
         if ((nptr & 0x2) != 0x2 || (nptr & 0x3) == 0x3) {
             jl_gc_chunk_t c = {GC_objary_chunk, ary16_parent, scan_end,
                                 ary16_end,      elem_begin,       elem_end,
