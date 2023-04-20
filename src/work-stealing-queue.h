@@ -49,7 +49,7 @@ static inline ws_array_t *ws_queue_push(ws_queue_t *q, void *elt) JL_NOTSAFEPOIN
         ws_array_t *new_ary = create_ws_array(2 * ary->capacity, ary->eltsz);
         for (int i = 0; i < ary->capacity; i++)
             memcpy(new_ary->buffer + ((t + i) % new_ary->capacity) * ary->eltsz,
-                    old_ary->buffer + ((t + i) % old_ary->capacity) * ary->eltsz, ary->eltsz);
+                    ary->buffer + ((t + i) % ary->capacity) * ary->eltsz, ary->eltsz);
         jl_atomic_store_release(&q->array, new_ary);
         old_ary = ary;
         ary = new_ary;
