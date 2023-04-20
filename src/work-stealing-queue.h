@@ -10,9 +10,12 @@ extern "C" {
 #endif
 
 // =======
-// Idempotent work-stealing stack
+// Chase and Lev's work-stealing queue, optimized for
+// weak memory models by Le et al.
 //
-// * Michael M. M. et al. Idempotent Work Stealing
+// * Chase D., Lev Y. Dynamic Circular Work-Stealing queue
+// * Le N. M. et al. Correct and Efficient Work-Stealing for
+//   Weak Memory Models
 // =======
 
 typedef struct {
@@ -31,60 +34,63 @@ static inline ws_array_t *create_ws_array(size_t capacity, int32_t eltsz) JL_NOT
 }
 
 typedef struct {
-    int32_t tail;
-    int32_t tag;
-} ws_anchor_t;
-
-typedef struct {
-    _Atomic(ws_anchor_t) anchor;
+    _Atomic(int64_t) top;
+    _Atomic(int64_t) bottom;
     _Atomic(ws_array_t *) array;
 } ws_queue_t;
 
 static inline ws_array_t *ws_queue_push(ws_queue_t *q, void *elt) JL_NOTSAFEPOINT
 {
-    ws_anchor_t anc = jl_atomic_load_acquire(&q->anchor);
+    int64_t b = jl_atomic_load_relaxed(&q->bottom);
+    int64_t t = jl_atomic_load_acquire(&q->top);
     ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
     ws_array_t *old_ary = NULL;
-    if (anc.tail == ary->capacity) {
-        // Resize queue
+    if (__unlikely(b - t > ary->capacity - 1)) {
         ws_array_t *new_ary = create_ws_array(2 * ary->capacity, ary->eltsz);
-        memcpy(new_ary->buffer, ary->buffer, anc.tail * ary->eltsz);
+        for (int i = 0; i < ary->capacity; i++)
+            memcpy(new_ary->buffer + ((t + i) % new_ary->capacity) * ary->eltsz,
+                    old_ary->buffer + ((t + i) % old_ary->capacity) * ary->eltsz, ary->eltsz);
         jl_atomic_store_release(&q->array, new_ary);
         old_ary = ary;
         ary = new_ary;
     }
-    memcpy(ary->buffer + anc.tail * ary->eltsz, elt, ary->eltsz);
-    anc.tail++;
-    anc.tag++;
-    jl_atomic_store_release(&q->anchor, anc);
+    memcpy(ary->buffer + (b % ary->capacity) * ary->eltsz, elt, ary->eltsz);
+    jl_fence_release();
+    jl_atomic_store_relaxed(&q->bottom, b + 1);
     return old_ary;
 }
 
 static inline void ws_queue_pop(ws_queue_t *q, void *dest) JL_NOTSAFEPOINT
 {
-    ws_anchor_t anc = jl_atomic_load_acquire(&q->anchor);
+    int64_t b = jl_atomic_load_relaxed(&q->bottom) - 1;
     ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
-    if (anc.tail == 0)
-        // Empty queue
-        return;
-    anc.tail--;
-    memcpy(dest, ary->buffer + anc.tail * ary->eltsz, ary->eltsz);
-    jl_atomic_store_release(&q->anchor, anc);
+    jl_atomic_store_relaxed(&q->bottom, b);
+    jl_fence();
+    int64_t t = jl_atomic_load_relaxed(&q->top);
+    if (__likely(t <= b)) {
+        memcpy(dest, ary->buffer + (b % ary->capacity) * ary->eltsz, ary->eltsz);
+        if (t == b) {
+            if (!jl_atomic_cmpswap(&q->top, &t, t + 1))
+                memset(dest, 0, ary->eltsz);
+            jl_atomic_store_relaxed(&q->bottom, b + 1);
+        }
+    }
+    else {
+        memset(dest, 0, ary->eltsz);
+        jl_atomic_store_relaxed(&q->bottom, b + 1);
+    }
 }
 
 static inline void ws_queue_steal_from(ws_queue_t *q, void *dest) JL_NOTSAFEPOINT
 {
-    ws_anchor_t anc = jl_atomic_load_acquire(&q->anchor);
-    ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
-    if (anc.tail == 0)
-        // Empty queue
-        return;
-    memcpy(dest, ary->buffer + (anc.tail - 1) * ary->eltsz, ary->eltsz);
-    ws_anchor_t anc2 = {anc.tail - 1, anc.tag};
-    if (!jl_atomic_cmpswap(&q->anchor, &anc, anc2)) {
-        // Steal failed
-        memset(dest, 0, ary->eltsz);
-        return;
+    int64_t t = jl_atomic_load_acquire(&q->top);
+    jl_fence();
+    int64_t b = jl_atomic_load_acquire(&q->bottom);
+    if (t < b) {
+        ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
+        memcpy(dest, ary->buffer + (t % ary->capacity) * ary->eltsz, ary->eltsz);
+        if (!jl_atomic_cmpswap(&q->top, &t, t + 1))
+            memset(dest, 0, ary->eltsz);
     }
 }
 

@@ -3575,14 +3575,15 @@ void jl_init_thread_heap(jl_ptls_t ptls)
 
     // Initialize GC mark-queue
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
-    ws_anchor_t anc = {0, 0};
     ws_queue_t *cq = &mq->cq;
     ws_array_t *wsa = create_ws_array(CHUNK_QUEUE_INIT_SIZE, sizeof(jl_gc_chunk_t));
-    jl_atomic_store_relaxed(&cq->anchor, anc);
+    jl_atomic_store_relaxed(&cq->top, 0);
+    jl_atomic_store_relaxed(&cq->bottom, 0);
     jl_atomic_store_relaxed(&cq->array, wsa);
     ws_queue_t *q = &mq->q;
     ws_array_t *wsa2 = create_ws_array(MARK_QUEUE_INIT_SIZE, sizeof(void *));
-    jl_atomic_store_relaxed(&q->anchor, anc);
+    jl_atomic_store_relaxed(&q->top, 0);
+    jl_atomic_store_relaxed(&q->bottom, 0);
     jl_atomic_store_relaxed(&q->array, wsa2);
 
     memset(&ptls->gc_num, 0, sizeof(ptls->gc_num));
