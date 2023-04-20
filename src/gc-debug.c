@@ -204,12 +204,13 @@ static void gc_verify_track(jl_ptls_t ptls)
     do {
         jl_gc_markqueue_t mq;
         jl_gc_markqueue_t *mq2 = &ptls->mark_queue;
-        ws_anchor_t anc = {0, 0};
         ws_queue_t *cq = &mq.cq;
         ws_queue_t *q = &mq.q;
-        jl_atomic_store_relaxed(&cq->anchor, anc);
+        jl_atomic_store_relaxed(&cq->top, 0);
+        jl_atomic_store_relaxed(&cq->bottom, 0);
         jl_atomic_store_relaxed(&cq->array, jl_atomic_load_relaxed(&mq2->cq.array));
-        jl_atomic_store_relaxed(&q->anchor, anc);
+        jl_atomic_store_relaxed(&q->top, 0);
+        jl_atomic_store_relaxed(&q->bottom, 0);
         jl_atomic_store_relaxed(&q->array, jl_atomic_load_relaxed(&mq2->q.array));
         arraylist_new(&mq.reclaim_set, 32);
         arraylist_push(&lostval_parents_done, lostval);
@@ -263,12 +264,13 @@ void gc_verify(jl_ptls_t ptls)
     }
     jl_gc_markqueue_t mq;
     jl_gc_markqueue_t *mq2 = &ptls->mark_queue;
-    ws_anchor_t anc = {0, 0};
     ws_queue_t *cq = &mq.cq;
     ws_queue_t *q = &mq.q;
-    jl_atomic_store_relaxed(&cq->anchor, anc);
+    jl_atomic_store_relaxed(&cq->top, 0);
+    jl_atomic_store_relaxed(&cq->bottom, 0);
     jl_atomic_store_relaxed(&cq->array, jl_atomic_load_relaxed(&mq2->cq.array));
-    jl_atomic_store_relaxed(&q->anchor, anc);
+    jl_atomic_store_relaxed(&q->top, 0);
+    jl_atomic_store_relaxed(&q->bottom, 0);
     jl_atomic_store_relaxed(&q->array, jl_atomic_load_relaxed(&mq2->q.array));
     arraylist_new(&mq.reclaim_set, 32);
     lostval = NULL;
