@@ -3243,7 +3243,10 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         int single_threaded = (jl_n_gcthreads == 0 || gc_heap_snapshot_enabled);
         for (int t_i = 0; t_i < gc_n_threads; t_i++) {
             jl_ptls_t ptls2 = gc_all_tls_states[t_i];
-            jl_ptls_t ptls_gc_thread = gc_all_tls_states[gc_first_tid + t_i % jl_n_gcthreads];
+            jl_ptls_t ptls_gc_thread = NULL;
+            if (!single_threaded) {
+                ptls_gc_thread = gc_all_tls_states[gc_first_tid + t_i % jl_n_gcthreads];
+            }
             if (ptls2 != NULL) {
                 jl_gc_markqueue_t *mq2 = single_threaded ? &ptls->mark_queue : &ptls_gc_thread->mark_queue;
                 // 2.1. mark every thread local root
