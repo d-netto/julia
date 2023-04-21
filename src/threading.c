@@ -589,6 +589,8 @@ static void jl_check_tls(void)
 JL_DLLEXPORT const int jl_tls_elf_support = 0;
 #endif
 
+extern int gc_first_tid;
+
 // interface to Julia; sets up to make the runtime thread-safe
 void jl_init_threading(void)
 {
@@ -650,6 +652,7 @@ void jl_init_threading(void)
     jl_atomic_store_release(&jl_all_tls_states, (jl_ptls_t*)calloc(jl_all_tls_states_size, sizeof(jl_ptls_t)));
     jl_atomic_store_release(&jl_n_threads, jl_all_tls_states_size);
     jl_n_gcthreads = ngcthreads;
+    gc_first_tid = nthreads;
 }
 
 static uv_barrier_t thread_init_done;

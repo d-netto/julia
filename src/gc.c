@@ -13,6 +13,10 @@ extern "C" {
 
 // Number of GC threads
 int jl_n_gcthreads;
+// `tid` of mutator thread that triggered GC
+_Atomic(int) gc_master_tid;
+// `tid` of first GC thread
+int gc_first_tid;
 
 // Mutex/cond used to synchronize sleep/wakeup of GC threads
 uv_mutex_t gc_threads_lock;
@@ -2837,6 +2841,10 @@ JL_EXTENSION NOINLINE void gc_mark_loop(jl_ptls_t ptls)
 void gc_mark_and_steal(jl_ptls_t ptls)
 {
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
+    jl_gc_markqueue_t *mq_master = NULL;
+    if (jl_atomic_load(&gc_master_tid) != -1) {
+        mq_master = &gc_all_tls_states[jl_atomic_load(&gc_master_tid)]->mark_queue;
+    }
     void *new_obj;
     jl_gc_chunk_t c;
     pop : {
@@ -2856,22 +2864,45 @@ void gc_mark_and_steal(jl_ptls_t ptls)
         goto pop;
     }
     steal : {
-        // Only choose a random victim when trying to steal a pointer
-        // in the beginning of a stealing cycle
+        // Try to steal pointer from random GC thread
         for (int i = 0; i < 2 * gc_n_threads; i++) {
-            uint32_t v = cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % gc_n_threads;
+            uint32_t v = gc_first_tid + cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % jl_n_gcthreads;
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
             new_obj = gc_markqueue_steal_from(mq2);
             if (new_obj != NULL)
                 goto mark;
         }
-        for (int i = 0; i < gc_n_threads; i++) {
+        // Try to steal chunk from random GC thread
+        for (int i = 0; i < 2 * gc_n_threads; i++) {
+            uint32_t v = gc_first_tid + cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % jl_n_gcthreads;
+            jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
+            c = gc_chunkqueue_steal_from(mq2);
+            if (c.cid != GC_empty_chunk) {
+                gc_mark_chunk(ptls, mq, &c);
+                goto pop;
+            }
+        }
+        if (mq_master != NULL) {
+            // Try to steal pointer from master thread
+            new_obj = gc_markqueue_steal_from(mq_master);
+            if (new_obj != NULL)
+                goto mark;
+            // Try to chunk from master thread
+            c = gc_chunkqueue_steal_from(mq_master);
+            if (c.cid != GC_empty_chunk) {
+                gc_mark_chunk(ptls, mq, &c);
+                goto pop;
+            }
+        }
+        // Sequentially walk GC threads to try to steal pointer
+        for (int i = gc_first_tid; i < gc_first_tid + jl_n_gcthreads; i++) {
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[i]->mark_queue;
             new_obj = gc_markqueue_steal_from(mq2);
             if (new_obj != NULL)
                 goto mark;
         }
-        for (int i = 0; i < gc_n_threads; i++) {
+        // Sequentially walk GC threads to try to steal chunk
+        for (int i = gc_first_tid; i < gc_first_tid + jl_n_gcthreads; i++) {
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[i]->mark_queue;
             c = gc_chunkqueue_steal_from(mq2);
             if (c.cid != GC_empty_chunk) {
@@ -2882,26 +2913,24 @@ void gc_mark_and_steal(jl_ptls_t ptls)
     }
 }
 
-#define GC_BACKOFF
 #define GC_BACKOFF_START 2
 #define GC_BACKOFF_END   8
 
 void gc_mark_backoff(int *i)
 {
-#ifdef GC_BACKOFF
     if (*i < GC_BACKOFF_END) {
         (*i)++;
     }
-    for (int j = 0; j < (1 << *i); j++) jl_cpu_pause();
-#else
-    uv_sleep(1);
-#endif
+    for (int j = 0; j < (1 << *i); j++) {
+        jl_cpu_pause();
+    }
 }
 
 void gc_mark_loop2(jl_ptls_t ptls, int master)
 {
     int i = GC_BACKOFF_START;
     if (master) {
+        jl_atomic_store(&gc_master_tid, ptls->tid);
         // Wake threads up and try to do some work
         uv_mutex_lock(&gc_threads_lock);
         jl_atomic_fetch_add(&gc_n_threads_marking, 1);
@@ -2918,18 +2947,6 @@ void gc_mark_loop2(jl_ptls_t ptls, int master)
         // Failed to steal
         gc_mark_backoff(&i);
     }
-    if (master) {
-        // Clean up `reclaim-sets`
-        for (int i = 0; i < gc_n_threads; i++) {
-            jl_ptls_t ptls2 = gc_all_tls_states[i];
-            arraylist_t *reclaim_set2 = &ptls2->mark_queue.reclaim_set;
-            ws_array_t *a = NULL;
-            while ((a = (ws_array_t *)arraylist_pop(reclaim_set2)) != NULL) {
-                free(a->buffer);
-                free(a);
-            }
-        }
-    }
 }
 
 void gc_mark_loop_master(jl_ptls_t ptls)
@@ -2940,6 +2957,23 @@ void gc_mark_loop_master(jl_ptls_t ptls)
     else {
         gc_mark_loop2(ptls, 1);
     }
+}
+
+void gc_mark_clean_reclaim_sets(void)
+{
+    // Clean up `reclaim-sets`
+    for (int i = 0; i < gc_n_threads; i++) {
+        jl_ptls_t ptls2 = gc_all_tls_states[i];
+        arraylist_t *reclaim_set2 = &ptls2->mark_queue.reclaim_set;
+        ws_array_t *a = NULL;
+        while ((a = (ws_array_t *)arraylist_pop(reclaim_set2)) != NULL) {
+            free(a->buffer);
+            free(a);
+        }
+    }
+    // Prevent stealing during marking phases that are sequential
+    // (e.g. `gc_mark_loop` and `gc_mark_finlist` in `_jl_gc_collect`)
+    jl_atomic_store(&gc_master_tid, -1);
 }
 
 static void gc_premark(jl_ptls_t ptls2)
@@ -3209,15 +3243,16 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         int single_threaded = (jl_n_gcthreads == 0 || gc_heap_snapshot_enabled);
         for (int t_i = 0; t_i < gc_n_threads; t_i++) {
             jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+            jl_ptls_t ptls_gc_thread = gc_all_tls_states[gc_first_tid + t_i % jl_n_gcthreads];
             if (ptls2 != NULL) {
-                jl_gc_markqueue_t *mq2 = single_threaded ? &ptls->mark_queue : &ptls2->mark_queue;
+                jl_gc_markqueue_t *mq2 = single_threaded ? &ptls->mark_queue : &ptls_gc_thread->mark_queue;
                 // 2.1. mark every thread local root
                 gc_queue_thread_local(mq2, ptls2);
                 // 2.2. mark any managed objects in the backtrace buffer
                 // TODO: treat these as roots for gc_heap_snapshot_record
                 gc_queue_bt_buf(mq2, ptls2);
                 // 2.3. mark every object in the `last_remsets` and `rem_binding`
-                gc_queue_remset(single_threaded ? ptls : ptls2, ptls2);
+                gc_queue_remset(single_threaded ? ptls : ptls_gc_thread, ptls2);
             }
         }
 
@@ -3228,6 +3263,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
                 gc_cblist_root_scanner, (collection));
         }
         gc_mark_loop_master(ptls);
+        gc_mark_clean_reclaim_sets();
 
         // 4. check for objects to finalize
         clear_weak_refs();
