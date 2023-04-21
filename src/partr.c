@@ -110,8 +110,12 @@ void JL_NORETURN jl_finish_task(jl_task_t *t);
 
 extern uv_mutex_t gc_threads_lock;
 extern uv_cond_t gc_threads_cond;
+extern _Atomic(uint8_t) gc_marking_running;
 extern _Atomic(uint8_t) gc_n_threads_marking;
-extern void gc_mark_loop2(jl_ptls_t ptls, int master);
+extern void gc_mark_and_steal(jl_ptls_t ptls);
+
+#define GC_BACKOFF_MIN 2
+#define GC_BACKOFF_MAX 12
 
 // gc thread function
 void jl_gc_threadfun(void *arg)
@@ -129,11 +133,22 @@ void jl_gc_threadfun(void *arg)
     free(targ);
 
     while (1) {
+        int log_backoff = GC_BACKOFF_MIN;
         uv_mutex_lock(&gc_threads_lock);
-        while (jl_atomic_load(&gc_n_threads_marking) == 0)
+        while (!jl_atomic_load(&gc_marking_running)) {
             uv_cond_wait(&gc_threads_cond, &gc_threads_lock);
+        }
         uv_mutex_unlock(&gc_threads_lock);
-        gc_mark_loop2(ptls, 0);
+        jl_atomic_fetch_add(&gc_n_threads_marking, 1);
+        gc_mark_and_steal(ptls);
+        jl_atomic_fetch_add(&gc_n_threads_marking, -1);
+        // failed to steal: backoff and try later
+        if (log_backoff < GC_BACKOFF_MAX) {
+            log_backoff++;
+        }
+        for (int j = 0; j < (1 << log_backoff); j++) {
+            jl_cpu_pause();
+        }
     }
 }
 
