@@ -2109,11 +2109,11 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
             }
         }
     }
-    size_t too_big = (obj_end - obj_begin) / MAX_REFS_AT_ONCE > step; // use this order of operations to avoid idiv
+    size_t too_big = (obj_end - obj_begin) / GC_CHUNK_BATCH_SIZE > step; // use this order of operations to avoid idiv
     jl_value_t **scan_end = obj_end;
     int pushed_chunk = 0;
     if (too_big) {
-        scan_end = obj_begin + step * MAX_REFS_AT_ONCE;
+        scan_end = obj_begin + step * GC_CHUNK_BATCH_SIZE;
         // case 1: array owner is young, so we won't need to scan through all its elements
         // to know that we will never need to push it to the remset. it's fine
         // to create a chunk with "incorrect" `nptr` and push it to the chunk-queue
@@ -2185,11 +2185,11 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent, jl_va
                 break;
         }
     }
-    size_t too_big = (ary8_end - ary8_begin) / MAX_REFS_AT_ONCE > elsize; // use this order of operations to avoid idiv
+    size_t too_big = (ary8_end - ary8_begin) / GC_CHUNK_BATCH_SIZE > elsize; // use this order of operations to avoid idiv
     jl_value_t **scan_end = ary8_end;
     int pushed_chunk = 0;
     if (too_big) {
-        scan_end = ary8_begin + elsize * MAX_REFS_AT_ONCE;
+        scan_end = ary8_begin + elsize * GC_CHUNK_BATCH_SIZE;
         // case 1: array owner is young, so we won't need to scan through all its elements
         // to know that we will never need to push it to the remset. it's fine
         // to create a chunk with "incorrect" `nptr` and push it to the chunk-queue
@@ -2263,11 +2263,11 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent, jl_
                 break;
         }
     }
-    size_t too_big = (ary16_end - ary16_begin) / MAX_REFS_AT_ONCE > elsize; // use this order of operations to avoid idiv
+    size_t too_big = (ary16_end - ary16_begin) / GC_CHUNK_BATCH_SIZE > elsize; // use this order of operations to avoid idiv
     jl_value_t **scan_end = ary16_end;
     int pushed_chunk = 0;
     if (too_big) {
-        scan_end = ary16_begin + elsize * MAX_REFS_AT_ONCE;
+        scan_end = ary16_begin + elsize * GC_CHUNK_BATCH_SIZE;
         // case 1: array owner is young, so we won't need to scan through all its elements
         // to know that we will never need to push it to the remset. it's fine
         // to create a chunk with "incorrect" `nptr` and push it to the chunk-queue
@@ -2467,10 +2467,10 @@ void gc_mark_finlist_(jl_gc_markqueue_t *mq, jl_value_t **fl_begin, jl_value_t *
     jl_value_t *new_obj;
     // Decide whether need to chunk finlist
     size_t nrefs = (fl_end - fl_begin);
-    if (nrefs > MAX_REFS_AT_ONCE) {
-        jl_gc_chunk_t c = {GC_finlist_chunk, NULL, fl_begin + MAX_REFS_AT_ONCE, fl_end, 0, 0, 0, 0};
+    if (nrefs > GC_CHUNK_BATCH_SIZE) {
+        jl_gc_chunk_t c = {GC_finlist_chunk, NULL, fl_begin + GC_CHUNK_BATCH_SIZE, fl_end, 0, 0, 0, 0};
         gc_chunkqueue_push(mq, &c);
-        fl_end = fl_begin + MAX_REFS_AT_ONCE;
+        fl_end = fl_begin + GC_CHUNK_BATCH_SIZE;
     }
     for (; fl_begin < fl_end; fl_begin++) {
         new_obj = *fl_begin;
@@ -2913,12 +2913,12 @@ void gc_mark_and_steal(jl_ptls_t ptls)
     }
 }
 
-#define GC_BACKOFF_START 2
-#define GC_BACKOFF_END   8
+#define GC_BACKOFF_MIN 4
+#define GC_BACKOFF_MAX 16
 
 void gc_mark_backoff(int *i)
 {
-    if (*i < GC_BACKOFF_END) {
+    if (*i < GC_BACKOFF_MAX) {
         (*i)++;
     }
     for (int j = 0; j < (1 << *i); j++) {
@@ -2928,7 +2928,7 @@ void gc_mark_backoff(int *i)
 
 void gc_mark_loop2(jl_ptls_t ptls, int master)
 {
-    int i = GC_BACKOFF_START;
+    int backoff = GC_BACKOFF_MIN;
     if (master) {
         jl_atomic_store(&gc_master_tid, ptls->tid);
         // Wake threads up and try to do some work
@@ -2945,7 +2945,7 @@ void gc_mark_loop2(jl_ptls_t ptls, int master)
         gc_mark_and_steal(ptls);
         jl_atomic_fetch_add(&gc_n_threads_marking, -1);
         // Failed to steal
-        gc_mark_backoff(&i);
+        gc_mark_backoff(&backoff);
     }
 }
 
@@ -3664,12 +3664,12 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     // Initialize GC mark-queue
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     ws_queue_t *cq = &mq->cq;
-    ws_array_t *wsa = create_ws_array(CHUNK_QUEUE_INIT_SIZE, sizeof(jl_gc_chunk_t));
+    ws_array_t *wsa = create_ws_array(GC_CHUNK_QUEUE_INIT_SIZE, sizeof(jl_gc_chunk_t));
     jl_atomic_store_relaxed(&cq->top, 0);
     jl_atomic_store_relaxed(&cq->bottom, 0);
     jl_atomic_store_relaxed(&cq->array, wsa);
     ws_queue_t *q = &mq->q;
-    ws_array_t *wsa2 = create_ws_array(MARK_QUEUE_INIT_SIZE, sizeof(void *));
+    ws_array_t *wsa2 = create_ws_array(GC_MARK_QUEUE_INIT_SIZE, sizeof(void *));
     jl_atomic_store_relaxed(&q->top, 0);
     jl_atomic_store_relaxed(&q->bottom, 0);
     jl_atomic_store_relaxed(&q->array, wsa2);
