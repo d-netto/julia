@@ -2842,9 +2842,9 @@ void gc_mark_and_steal(jl_ptls_t ptls)
 {
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_gc_markqueue_t *mq_master = NULL;
-    if (jl_atomic_load(&gc_master_tid) != -1) {
-        mq_master = &gc_all_tls_states[jl_atomic_load(&gc_master_tid)]->mark_queue;
-    }
+    int master_tid = jl_atomic_load(&gc_master_tid);
+    if (master_tid != -1)
+        mq_master = &gc_all_tls_states[master_tid]->mark_queue;
     void *new_obj;
     jl_gc_chunk_t c;
     pop : {
@@ -2887,7 +2887,7 @@ void gc_mark_and_steal(jl_ptls_t ptls)
                 goto pop;
             }
         }
-        // Try to chunk from master thread
+        // Try to steal chunk from master thread
         if (mq_master != NULL) {
             c = gc_chunkqueue_steal_from(mq_master);
             if (c.cid != GC_empty_chunk) {
@@ -2948,7 +2948,9 @@ void gc_mark_loop2(jl_ptls_t ptls, int master)
     while (jl_atomic_load(&gc_n_threads_marking) > 0) {
         // Try to become a thief while other threads are marking
         jl_atomic_fetch_add(&gc_n_threads_marking, 1);
-        gc_mark_and_steal(ptls);
+        if (jl_atomic_load(&gc_master_tid) != -1) {
+            gc_mark_and_steal(ptls);
+        }
         jl_atomic_fetch_add(&gc_n_threads_marking, -1);
         // Failed to steal
         gc_mark_backoff(&backoff);
@@ -2967,6 +2969,11 @@ void gc_mark_loop_master(jl_ptls_t ptls)
 
 void gc_mark_clean_reclaim_sets(void)
 {
+    // Prevent stealing during marking phases that are sequential
+    // (e.g. `gc_mark_loop` and `gc_mark_finlist` in `_jl_gc_collect`)
+    jl_atomic_store(&gc_master_tid, -1);
+    while (jl_atomic_load(&gc_n_threads_marking) != 0)
+        jl_cpu_pause();
     // Clean up `reclaim-sets`
     for (int i = 0; i < gc_n_threads; i++) {
         jl_ptls_t ptls2 = gc_all_tls_states[i];
@@ -2977,9 +2984,6 @@ void gc_mark_clean_reclaim_sets(void)
             free(a);
         }
     }
-    // Prevent stealing during marking phases that are sequential
-    // (e.g. `gc_mark_loop` and `gc_mark_finlist` in `_jl_gc_collect`)
-    jl_atomic_store(&gc_master_tid, -1);
 }
 
 static void gc_premark(jl_ptls_t ptls2)
