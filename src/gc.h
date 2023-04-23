@@ -103,7 +103,7 @@ typedef struct _jl_gc_chunk_t {
     uintptr_t nptr;
 } jl_gc_chunk_t;
 
-#define GC_CHUNK_BATCH_SIZE (1 << 12)
+#define GC_CHUNK_BATCH_SIZE (1 << 16)
 #define GC_MARK_QUEUE_INIT_SIZE (1 << 18)
 #define GC_CHUNK_QUEUE_INIT_SIZE (1 << 14)
 
