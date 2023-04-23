@@ -2863,17 +2863,13 @@ void gc_mark_and_steal(jl_ptls_t ptls)
         gc_mark_outrefs(ptls, mq, new_obj, 0);
         goto pop;
     }
+    // Note that for the stealing heuristics, we try to
+    // steal chunks much more agressively than pointers,
+    // since we know chunks will likely expand into a lot
+    // of work for the mark loop
     steal : {
-        // Try to steal pointer from random GC thread
-        for (int i = 0; i < 2 * gc_n_threads; i++) {
-            uint32_t v = gc_first_tid + cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % jl_n_gcthreads;
-            jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
-            new_obj = gc_markqueue_steal_from(mq2);
-            if (new_obj != NULL)
-                goto mark;
-        }
         // Try to steal chunk from random GC thread
-        for (int i = 0; i < 2 * gc_n_threads; i++) {
+        for (int i = 0; i < 4 * jl_n_gcthreads; i++) {
             uint32_t v = gc_first_tid + cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % jl_n_gcthreads;
             jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
             c = gc_chunkqueue_steal_from(mq2);
@@ -2881,25 +2877,6 @@ void gc_mark_and_steal(jl_ptls_t ptls)
                 gc_mark_chunk(ptls, mq, &c);
                 goto pop;
             }
-        }
-        if (mq_master != NULL) {
-            // Try to steal pointer from master thread
-            new_obj = gc_markqueue_steal_from(mq_master);
-            if (new_obj != NULL)
-                goto mark;
-            // Try to chunk from master thread
-            c = gc_chunkqueue_steal_from(mq_master);
-            if (c.cid != GC_empty_chunk) {
-                gc_mark_chunk(ptls, mq, &c);
-                goto pop;
-            }
-        }
-        // Sequentially walk GC threads to try to steal pointer
-        for (int i = gc_first_tid; i < gc_first_tid + jl_n_gcthreads; i++) {
-            jl_gc_markqueue_t *mq2 = &gc_all_tls_states[i]->mark_queue;
-            new_obj = gc_markqueue_steal_from(mq2);
-            if (new_obj != NULL)
-                goto mark;
         }
         // Sequentially walk GC threads to try to steal chunk
         for (int i = gc_first_tid; i < gc_first_tid + jl_n_gcthreads; i++) {
@@ -2910,11 +2887,40 @@ void gc_mark_and_steal(jl_ptls_t ptls)
                 goto pop;
             }
         }
+        // Try to chunk from master thread
+        if (mq_master != NULL) {
+            c = gc_chunkqueue_steal_from(mq_master);
+            if (c.cid != GC_empty_chunk) {
+                gc_mark_chunk(ptls, mq, &c);
+                goto pop;
+            }
+        }
+        // Try to steal pointer from random GC thread
+        for (int i = 0; i < 4 * jl_n_gcthreads; i++) {
+            uint32_t v = gc_first_tid + cong(UINT64_MAX, UINT64_MAX, &ptls->rngseed) % jl_n_gcthreads;
+            jl_gc_markqueue_t *mq2 = &gc_all_tls_states[v]->mark_queue;
+            new_obj = gc_markqueue_steal_from(mq2);
+            if (new_obj != NULL)
+                goto mark;
+        }
+        // Sequentially walk GC threads to try to steal pointer
+        for (int i = gc_first_tid; i < gc_first_tid + jl_n_gcthreads; i++) {
+            jl_gc_markqueue_t *mq2 = &gc_all_tls_states[i]->mark_queue;
+            new_obj = gc_markqueue_steal_from(mq2);
+            if (new_obj != NULL)
+                goto mark;
+        }
+        // Try to steal pointer from master thread
+        if (mq_master != NULL) {
+            new_obj = gc_markqueue_steal_from(mq_master);
+            if (new_obj != NULL)
+                goto mark;
+        }
     }
 }
 
 #define GC_BACKOFF_MIN 4
-#define GC_BACKOFF_MAX 16
+#define GC_BACKOFF_MAX 12
 
 void gc_mark_backoff(int *i)
 {
