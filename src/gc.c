@@ -1928,7 +1928,7 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
 // Push a work item to the queue
 STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
 {
-    ws_array_t *old_a = ws_queue_push(&mq->q, &obj, sizeof(jl_value_t*));
+    ws_array_t *old_a = ws_queue_push(&mq->ptr_queue, &obj, sizeof(jl_value_t*));
     // Put `old_a` in `reclaim_set` to be freed after the mark phase
     if (__unlikely(old_a != NULL))
         arraylist_push(&mq->reclaim_set, old_a);
@@ -1938,7 +1938,7 @@ STATIC_INLINE void gc_markqueue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_
 STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
     jl_value_t *v = NULL;
-    ws_queue_pop(&mq->q, &v, sizeof(jl_value_t*));
+    ws_queue_pop(&mq->ptr_queue, &v, sizeof(jl_value_t*));
     return v;
 }
 
@@ -1946,14 +1946,14 @@ STATIC_INLINE jl_value_t *gc_markqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOIN
 STATIC_INLINE jl_value_t *gc_markqueue_steal_from(jl_gc_markqueue_t *mq2) JL_NOTSAFEPOINT
 {
     jl_value_t *v = NULL;
-    ws_queue_steal_from(&mq2->q, &v, sizeof(jl_value_t*));
+    ws_queue_steal_from(&mq2->ptr_queue, &v, sizeof(jl_value_t*));
     return v;
 }
 
 // Push chunk `*c` into chunk queue
 STATIC_INLINE void gc_chunkqueue_push(jl_gc_markqueue_t *mq, jl_gc_chunk_t *c) JL_NOTSAFEPOINT
 {
-    ws_array_t *old_a = ws_queue_push(&mq->cq, c, sizeof(jl_gc_chunk_t));
+    ws_array_t *old_a = ws_queue_push(&mq->chunk_queue, c, sizeof(jl_gc_chunk_t));
     // Put `old_a` in `reclaim_set` to be freed after the mark phase
     if (__unlikely(old_a != NULL))
         arraylist_push(&mq->reclaim_set, old_a);
@@ -1963,7 +1963,7 @@ STATIC_INLINE void gc_chunkqueue_push(jl_gc_markqueue_t *mq, jl_gc_chunk_t *c) J
 STATIC_INLINE jl_gc_chunk_t gc_chunkqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
     jl_gc_chunk_t c = {.cid = GC_empty_chunk};
-    ws_queue_pop(&mq->cq, &c, sizeof(jl_gc_chunk_t));
+    ws_queue_pop(&mq->chunk_queue, &c, sizeof(jl_gc_chunk_t));
     return c;
 }
 
@@ -1971,7 +1971,7 @@ STATIC_INLINE jl_gc_chunk_t gc_chunkqueue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEP
 STATIC_INLINE jl_gc_chunk_t gc_chunkqueue_steal_from(jl_gc_markqueue_t *mq2) JL_NOTSAFEPOINT
 {
     jl_gc_chunk_t c = {.cid = GC_empty_chunk};
-    ws_queue_steal_from(&mq2->cq, &c, sizeof(jl_gc_chunk_t));
+    ws_queue_steal_from(&mq2->chunk_queue, &c, sizeof(jl_gc_chunk_t));
     return c;
 }
 
@@ -2967,14 +2967,16 @@ void gc_mark_loop_master(jl_ptls_t ptls)
     }
 }
 
-void gc_mark_clean_reclaim_sets(void)
+void gc_mark_loop_barrier(void)
 {
-    // Prevent stealing during marking phases that are sequential
-    // (e.g. `gc_mark_loop` and `gc_mark_finlist` in `_jl_gc_collect`)
     jl_atomic_store(&gc_master_tid, -1);
     while (jl_atomic_load(&gc_n_threads_marking) != 0)
         jl_cpu_pause();
-    // Clean up `reclaim-sets`
+}
+
+void gc_mark_clean_reclaim_sets(void)
+{
+    // Clean up `reclaim-sets` and reset `top/bottom` of queues
     for (int i = 0; i < gc_n_threads; i++) {
         jl_ptls_t ptls2 = gc_all_tls_states[i];
         arraylist_t *reclaim_set2 = &ptls2->mark_queue.reclaim_set;
@@ -3253,12 +3255,13 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
         int single_threaded = (jl_n_gcthreads == 0 || gc_heap_snapshot_enabled);
         for (int t_i = 0; t_i < gc_n_threads; t_i++) {
             jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+            jl_gc_markqueue_t *mq2 = &ptls->mark_queue;
             jl_ptls_t ptls_gc_thread = NULL;
             if (!single_threaded) {
                 ptls_gc_thread = gc_all_tls_states[gc_first_tid + t_i % jl_n_gcthreads];
+                mq2 = &ptls_gc_thread->mark_queue;
             }
             if (ptls2 != NULL) {
-                jl_gc_markqueue_t *mq2 = single_threaded ? &ptls->mark_queue : &ptls_gc_thread->mark_queue;
                 // 2.1. mark every thread local root
                 gc_queue_thread_local(mq2, ptls2);
                 // 2.2. mark any managed objects in the backtrace buffer
@@ -3276,6 +3279,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection)
                 gc_cblist_root_scanner, (collection));
         }
         gc_mark_loop_master(ptls);
+        gc_mark_loop_barrier();
         gc_mark_clean_reclaim_sets();
 
         // 4. check for objects to finalize
@@ -3631,7 +3635,7 @@ void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_markqueue_t *mq)
     assert(gc_n_threads);
     for (size_t i = 0; i < gc_n_threads; i++) {
         jl_ptls_t ptls2 = gc_all_tls_states[i];
-        if (ptls2)
+        if (ptls2 != NULL)
             gc_queue_thread_local(mq, ptls2);
     }
     gc_mark_roots(mq);
@@ -3673,13 +3677,13 @@ void jl_init_thread_heap(jl_ptls_t ptls)
 
     // Initialize GC mark-queue
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
-    ws_queue_t *cq = &mq->cq;
+    ws_queue_t *cq = &mq->chunk_queue;
     ws_array_t *wsa = create_ws_array(GC_CHUNK_QUEUE_INIT_SIZE, sizeof(jl_gc_chunk_t));
     jl_atomic_store_relaxed(&cq->top, 0);
     jl_atomic_store_relaxed(&cq->bottom, 0);
     jl_atomic_store_relaxed(&cq->array, wsa);
-    ws_queue_t *q = &mq->q;
-    ws_array_t *wsa2 = create_ws_array(GC_MARK_QUEUE_INIT_SIZE, sizeof(void *));
+    ws_queue_t *q = &mq->ptr_queue;
+    ws_array_t *wsa2 = create_ws_array(GC_PTR_QUEUE_INIT_SIZE, sizeof(jl_value_t *));
     jl_atomic_store_relaxed(&q->top, 0);
     jl_atomic_store_relaxed(&q->bottom, 0);
     jl_atomic_store_relaxed(&q->array, wsa2);

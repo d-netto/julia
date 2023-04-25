@@ -35,18 +35,18 @@ static inline ws_array_t *create_ws_array(size_t capacity, int32_t eltsz) JL_NOT
 }
 
 typedef struct {
-    _Atomic(int64_t) top;
-    _Atomic(int64_t) bottom;
+    _Atomic(size_t) top;
+    _Atomic(size_t) bottom;
     _Atomic(ws_array_t *) array;
 } ws_queue_t;
 
 static inline ws_array_t *ws_queue_push(ws_queue_t *q, void *elt, int32_t eltsz) JL_NOTSAFEPOINT
 {
-    int64_t b = jl_atomic_load_relaxed(&q->bottom);
-    int64_t t = jl_atomic_load_acquire(&q->top);
+    size_t b = jl_atomic_load_relaxed(&q->bottom);
+    size_t t = jl_atomic_load_acquire(&q->top);
     ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
     ws_array_t *old_ary = NULL;
-    if (__unlikely(b - t > ary->capacity - 1)) {
+    if (__unlikely(b - t + 1 > ary->capacity)) {
         ws_array_t *new_ary = create_ws_array(2 * ary->capacity, eltsz);
         for (int i = 0; i < ary->capacity; i++) {
             memcpy(new_ary->buffer + ((t + i) & new_ary->mask) * eltsz, ary->buffer + ((t + i) & ary->mask) * eltsz, eltsz);
@@ -63,11 +63,11 @@ static inline ws_array_t *ws_queue_push(ws_queue_t *q, void *elt, int32_t eltsz)
 
 static inline void ws_queue_pop(ws_queue_t *q, void *dest, int32_t eltsz) JL_NOTSAFEPOINT
 {
-    int64_t b = jl_atomic_load_relaxed(&q->bottom) - 1;
+    size_t b = jl_atomic_load_relaxed(&q->bottom) - 1;
     ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
     jl_atomic_store_relaxed(&q->bottom, b);
     jl_fence();
-    int64_t t = jl_atomic_load_relaxed(&q->top);
+    size_t t = jl_atomic_load_relaxed(&q->top);
     if (__likely(t <= b)) {
         memcpy(dest, ary->buffer + (b & ary->mask) * eltsz, eltsz);
         if (t == b) {
@@ -84,9 +84,9 @@ static inline void ws_queue_pop(ws_queue_t *q, void *dest, int32_t eltsz) JL_NOT
 
 static inline void ws_queue_steal_from(ws_queue_t *q, void *dest, int32_t eltsz) JL_NOTSAFEPOINT
 {
-    int64_t t = jl_atomic_load_acquire(&q->top);
+    size_t t = jl_atomic_load_acquire(&q->top);
     jl_fence();
-    int64_t b = jl_atomic_load_acquire(&q->bottom);
+    size_t b = jl_atomic_load_acquire(&q->bottom);
     if (t < b) {
         ws_array_t *ary = jl_atomic_load_relaxed(&q->array);
         memcpy(dest, ary->buffer + (t & ary->mask) * eltsz, eltsz);

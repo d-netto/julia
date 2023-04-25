@@ -609,7 +609,6 @@ void jl_init_threading(void)
     jl_n_threadpools = 2;
     int16_t nthreads = JULIA_NUM_THREADS;
     int16_t nthreadsi = 0;
-    int8_t ngcthreads = jl_options.ngcthreads;
     char *endptr, *endptri;
 
     if (jl_options.nthreads != 0) { // --threads specified
@@ -641,6 +640,18 @@ void jl_init_threading(void)
                 if (errno != 0 || endptri == cp || nthreadsi < 0)
                     nthreadsi = 0;
             }
+        }
+    }
+
+    int16_t ngcthreads = jl_options.ngcthreads - 1;
+    if (ngcthreads == -1) {
+        // if `--gcthreads` was not specified, set the number of GC threads
+        // to half of compute threads
+        if (nthreads <= 1) {
+            ngcthreads = 0;
+        }
+        else {
+            ngcthreads = (nthreads / 2) - 1;
         }
     }
 

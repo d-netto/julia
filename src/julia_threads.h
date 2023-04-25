@@ -172,8 +172,8 @@ typedef struct {
 } jl_thread_heap_t;
 
 typedef struct {
-    ws_queue_t cq;
-    ws_queue_t q;
+    ws_queue_t chunk_queue;
+    ws_queue_t ptr_queue;
     arraylist_t reclaim_set;
 } jl_gc_markqueue_t;
 

@@ -129,7 +129,7 @@ static const char opts[]  =
     "                           interface if supported (Linux and Windows) or to the number of CPU\n"
     "                           threads if not supported (MacOS) or if process affinity is not\n"
     "                           configured, and sets M to 1.\n"
-    " --gcthreads=N             Start and use N threads for GC, 1 if unspecified.\n"
+    " --gcthreads=N             Use N threads for GC, set to half of the number of compute threads if unspecified.\n"
     " -p, --procs {N|auto}      Integer value N launches N additional local worker processes\n"
     "                           \"auto\" launches as many workers as the number of local CPU threads (logical cores)\n"
     " --machine-file <file>     Run processes on hosts listed in <file>\n\n"
@@ -823,9 +823,9 @@ restart_switch:
         case opt_gc_threads:
             errno = 0;
             long ngcthreads = strtol(optarg, &endptr, 10);
-            if (errno != 0 || optarg == endptr || *endptr != 0 || ngcthreads < 1 || ngcthreads >= INT8_MAX)
+            if (errno != 0 || optarg == endptr || *endptr != 0 || ngcthreads < 1 || ngcthreads >= INT16_MAX)
                 jl_errorf("julia: --gcthreads=<n>; n must be an integer >= 1");
-            jl_options.ngcthreads = (int8_t)ngcthreads;
+            jl_options.ngcthreads = (int16_t)ngcthreads;
             break;
         default:
             jl_errorf("julia: unhandled option -- %c\n"
