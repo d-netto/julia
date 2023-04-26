@@ -2140,8 +2140,8 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
     if (too_big) {
         if (!pushed_chunk) {
             jl_gc_chunk_t c = {GC_objary_chunk, obj_parent, scan_end,
-                                obj_end,      NULL,       NULL,
-                                step,         nptr};
+                               obj_end,      NULL,       NULL,
+                               step,         nptr};
             gc_chunkqueue_push(mq, &c);
         }
     }
