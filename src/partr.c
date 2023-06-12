@@ -125,11 +125,31 @@ void jl_gc_threadfun(void *arg)
 
     while (1) {
         uv_mutex_lock(&gc_threads_lock);
-        while (jl_atomic_load(&gc_n_threads_marking) == 0) {
+        while (jl_atomic_load(&gc_n_threads_marking) == 0 && !jl_atomic_load(&gc_sweeping_running)) {
             uv_cond_wait(&gc_threads_cond, &gc_threads_lock);
         }
         uv_mutex_unlock(&gc_threads_lock);
-        gc_mark_loop_parallel(ptls, 0);
+        if (!jl_atomic_load(&gc_sweeping_running)) {
+            gc_mark_loop_parallel(ptls, 0);
+        }
+        else if (ptls->tid == gc_first_tid) {
+            while (!jl_atomic_load(&gc_sweeping_running)) {
+                jl_cpu_pause();
+            }
+            while (1) {
+                jl_mutex_lock_nogc(&global_page_pool_to_madvise.lock);
+                jl_gc_pagemeta_t *pg = pop_page_metadata_back(&global_page_pool_to_madvise.page_metadata_back);
+                jl_mutex_unlock_nogc(&global_page_pool_to_madvise.lock);
+                if (pg == NULL) {
+                    break;
+                }
+                jl_gc_free_page(pg);
+                jl_mutex_lock_nogc(&global_page_pool_madvised.lock);
+                push_page_metadata_back(&global_page_pool_madvised.page_metadata_back, pg);
+                jl_mutex_unlock_nogc(&global_page_pool_madvised.lock);
+            }
+            jl_atomic_store(&gc_sweeping_running, 0);
+        }
     }
 }
 

@@ -15,6 +15,8 @@ extern "C" {
 _Atomic(int) gc_n_threads_marking;
 // `tid` of mutator thread that triggered GC
 _Atomic(int) gc_master_tid;
+// Flag to indicate whether concurrent sweeping is running
+_Atomic(uint8_t) gc_sweeping_running;
 // `tid` of first GC thread
 int gc_first_tid;
 // Mutex/cond used to synchronize sleep/wakeup of GC threads
@@ -177,8 +179,6 @@ JL_DLLEXPORT uintptr_t jl_get_buff_tag(void)
 {
     return jl_buff_tag;
 }
-
-pagetable_t memory_map;
 
 // List of marked big objects.  Not per-thread.  Accessed only by master thread.
 bigval_t *big_objects_marked = NULL;
@@ -819,7 +819,7 @@ FORCE_INLINE int gc_try_setmark_tag(jl_taggedvalue_t *o, uint8_t mark_mode) JL_N
 STATIC_INLINE void gc_setmark_big(jl_ptls_t ptls, jl_taggedvalue_t *o,
                                   uint8_t mark_mode) JL_NOTSAFEPOINT
 {
-    assert(!page_metadata(o));
+    assert(!gc_alloc_map_is_set((char*)o));
     bigval_t *hdr = bigval_header(o);
     if (mark_mode == GC_OLD_MARKED) {
         ptls->gc_cache.perm_scanned_bytes += hdr->sz & ~3;
@@ -842,13 +842,17 @@ STATIC_INLINE void gc_setmark_big(jl_ptls_t ptls, jl_taggedvalue_t *o,
 // This function should be called exactly once during marking for each pool
 // object being marked to update the page metadata.
 STATIC_INLINE void gc_setmark_pool_(jl_ptls_t ptls, jl_taggedvalue_t *o,
-                                    uint8_t mark_mode,
-                                    jl_gc_pagemeta_t *page) JL_NOTSAFEPOINT
+                                    uint8_t mark_mode) JL_NOTSAFEPOINT
 {
 #ifdef MEMDEBUG
     gc_setmark_big(ptls, o, mark_mode);
 #else
-    jl_assume(page);
+    jl_gc_pagemeta_t *page = NULL;
+    char *_o = (char*)o;
+    if (!gc_alloc_map_is_set(_o)) {
+        return;
+    }
+    page = jl_assume(page_metadata(_o));
     if (mark_mode == GC_OLD_MARKED) {
         ptls->gc_cache.perm_scanned_bytes += page->osize;
         static_assert(sizeof(_Atomic(uint16_t)) == sizeof(page->nold), "");
@@ -869,7 +873,7 @@ STATIC_INLINE void gc_setmark_pool_(jl_ptls_t ptls, jl_taggedvalue_t *o,
 STATIC_INLINE void gc_setmark_pool(jl_ptls_t ptls, jl_taggedvalue_t *o,
                                    uint8_t mark_mode) JL_NOTSAFEPOINT
 {
-    gc_setmark_pool_(ptls, o, mark_mode, page_metadata(o));
+    gc_setmark_pool_(ptls, o, mark_mode);
 }
 
 STATIC_INLINE void gc_setmark(jl_ptls_t ptls, jl_taggedvalue_t *o,
@@ -893,11 +897,8 @@ STATIC_INLINE void gc_setmark_buf_(jl_ptls_t ptls, void *o, uint8_t mark_mode, s
     // sure.
     if (__likely(gc_try_setmark_tag(buf, mark_mode)) && !gc_verifying) {
         if (minsz <= GC_MAX_SZCLASS) {
-            jl_gc_pagemeta_t *page = page_metadata(buf);
-            if (page != NULL) {
-                gc_setmark_pool_(ptls, buf, bits, page);
-                return;
-            }
+            gc_setmark_pool_(ptls, buf, bits);
+            return;
         }
         gc_setmark_big(ptls, buf, bits);
     }
@@ -1243,6 +1244,11 @@ STATIC_INLINE jl_taggedvalue_t *gc_reset_page(jl_ptls_t ptls2, const jl_gc_pool_
     return beg;
 }
 
+jl_gc_global_page_pool_t global_page_pool_clean;
+jl_gc_global_page_pool_t global_page_pool_to_madvise;
+jl_gc_global_page_pool_t global_page_pool_madvised;
+jl_gc_alloc_map_t alloc_map;
+
 // Add a new page to the pool. Discards any pages in `p->newpages` before.
 static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
 {
@@ -1252,6 +1258,8 @@ static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
     jl_gc_pagemeta_t *pg = jl_gc_alloc_page();
     pg->osize = p->osize;
     pg->thread_n = ptls->tid;
+    set_page_metadata(pg);
+    push_page_metadata_back(&ptls->page_metadata_back, pg);
     jl_taggedvalue_t *fl = gc_reset_page(ptls, p, pg, NULL);
     p->newpages = fl;
     return fl;
@@ -1348,7 +1356,7 @@ int jl_gc_classify_pools(size_t sz, int *osize)
 int64_t lazy_freed_pages = 0;
 
 // Returns pointer to terminal pointer of list rooted at *pfl.
-static jl_taggedvalue_t **sweep_page(jl_gc_pool_t *p, jl_gc_pagemeta_t *pg, jl_taggedvalue_t **pfl, int sweep_full, int osize) JL_NOTSAFEPOINT
+static jl_taggedvalue_t **gc_sweep_page(jl_gc_pool_t *p, jl_gc_pagemeta_t **scratch, jl_gc_pagemeta_t *pg, jl_taggedvalue_t **pfl, int sweep_full, int osize) JL_NOTSAFEPOINT
 {
     char *data = pg->data;
     jl_taggedvalue_t *v = (jl_taggedvalue_t*)(data + GC_PAGE_OFFSET);
@@ -1356,6 +1364,7 @@ static jl_taggedvalue_t **sweep_page(jl_gc_pool_t *p, jl_gc_pagemeta_t *pg, jl_t
     size_t old_nfree = pg->nfree;
     size_t nfree;
 
+    int push_to_scratch = 1;
     int freedall = 1;
     int pg_skpd = 1;
     if (!pg->has_marked) {
@@ -1372,7 +1381,7 @@ static jl_taggedvalue_t **sweep_page(jl_gc_pool_t *p, jl_gc_pagemeta_t *pg, jl_t
             lazy_freed_pages++;
         }
         else {
-            jl_gc_free_page(data);
+            push_to_scratch = 0;
         }
         nfree = (GC_PAGE_SZ - GC_PAGE_OFFSET) / osize;
         goto done;
@@ -1440,97 +1449,34 @@ static jl_taggedvalue_t **sweep_page(jl_gc_pool_t *p, jl_gc_pagemeta_t *pg, jl_t
     nfree = pg->nfree;
 
 done:
+    if (push_to_scratch) {
+        push_page_metadata_back(scratch, pg);
+    }
+    else {
+        if (jl_n_gcthreads == 0) {
+            jl_gc_free_page(pg);
+            push_page_metadata_back(&global_page_pool_madvised.page_metadata_back, pg);
+        }
+        else {
+            jl_mutex_lock_nogc(&global_page_pool_to_madvise.lock);
+            push_page_metadata_back(&global_page_pool_to_madvise.page_metadata_back, pg);
+            jl_mutex_unlock_nogc(&global_page_pool_to_madvise.lock);
+        }
+    }
     gc_time_count_page(freedall, pg_skpd);
     gc_num.freed += (nfree - old_nfree) * osize;
     return pfl;
 }
 
 // the actual sweeping over all allocated pages in a memory pool
-STATIC_INLINE void sweep_pool_page(jl_taggedvalue_t ***pfl, jl_gc_pagemeta_t *pg, int sweep_full) JL_NOTSAFEPOINT
+STATIC_INLINE void gc_sweep_pool_page(jl_taggedvalue_t ***pfl, jl_gc_pagemeta_t **scratch, jl_gc_pagemeta_t *pg, int sweep_full) JL_NOTSAFEPOINT
 {
     int p_n = pg->pool_n;
     int t_n = pg->thread_n;
     jl_ptls_t ptls2 = gc_all_tls_states[t_n];
     jl_gc_pool_t *p = &ptls2->heap.norm_pools[p_n];
     int osize = pg->osize;
-    pfl[t_n * JL_GC_N_POOLS + p_n] = sweep_page(p, pg, pfl[t_n * JL_GC_N_POOLS + p_n], sweep_full, osize);
-}
-
-// sweep over a pagetable0 for all allocated pages
-STATIC_INLINE int sweep_pool_pagetable0(jl_taggedvalue_t ***pfl, pagetable0_t *pagetable0, int sweep_full) JL_NOTSAFEPOINT
-{
-    unsigned ub = 0;
-    unsigned alloc = 0;
-    for (unsigned pg_i = 0; pg_i <= pagetable0->ub; pg_i++) {
-        uint32_t line = pagetable0->allocmap[pg_i];
-        unsigned j;
-        if (!line)
-            continue;
-        ub = pg_i;
-        alloc = 1;
-        for (j = 0; line; j++, line >>= 1) {
-            unsigned next = ffs_u32(line);
-            j += next;
-            line >>= next;
-            jl_gc_pagemeta_t *pg = pagetable0->meta[pg_i * 32 + j];
-            sweep_pool_page(pfl, pg, sweep_full);
-        }
-    }
-    pagetable0->ub = ub;
-    return alloc;
-}
-
-// sweep over pagetable1 for all pagetable0 that may contain allocated pages
-STATIC_INLINE int sweep_pool_pagetable1(jl_taggedvalue_t ***pfl, pagetable1_t *pagetable1, int sweep_full) JL_NOTSAFEPOINT
-{
-    unsigned ub = 0;
-    unsigned alloc = 0;
-    for (unsigned pg_i = 0; pg_i <= pagetable1->ub; pg_i++) {
-        uint32_t line = pagetable1->allocmap0[pg_i];
-        unsigned j;
-        for (j = 0; line; j++, line >>= 1) {
-            unsigned next = ffs_u32(line);
-            j += next;
-            line >>= next;
-            pagetable0_t *pagetable0 = pagetable1->meta0[pg_i * 32 + j];
-            if (pagetable0 && !sweep_pool_pagetable0(pfl, pagetable0, sweep_full))
-                pagetable1->allocmap0[pg_i] &= ~(1 << j); // no allocations found, remember that for next time
-        }
-        if (pagetable1->allocmap0[pg_i]) {
-            ub = pg_i;
-            alloc = 1;
-        }
-    }
-    pagetable1->ub = ub;
-    return alloc;
-}
-
-// sweep over all memory for all pagetable1 that may contain allocated pages
-static void sweep_pool_pagetable(jl_taggedvalue_t ***pfl, int sweep_full) JL_NOTSAFEPOINT
-{
-    if (REGION2_PG_COUNT == 1) { // compile-time optimization
-        pagetable1_t *pagetable1 = memory_map.meta1[0];
-        if (pagetable1 != NULL)
-            sweep_pool_pagetable1(pfl, pagetable1, sweep_full);
-        return;
-    }
-    unsigned ub = 0;
-    for (unsigned pg_i = 0; pg_i <= memory_map.ub; pg_i++) {
-        uint32_t line = memory_map.allocmap1[pg_i];
-        unsigned j;
-        for (j = 0; line; j++, line >>= 1) {
-            unsigned next = ffs_u32(line);
-            j += next;
-            line >>= next;
-            pagetable1_t *pagetable1 = memory_map.meta1[pg_i * 32 + j];
-            if (pagetable1 && !sweep_pool_pagetable1(pfl, pagetable1, sweep_full))
-                memory_map.allocmap1[pg_i] &= ~(1 << j); // no allocations found, remember that for next time
-        }
-        if (memory_map.allocmap1[pg_i]) {
-            ub = pg_i;
-        }
-    }
-    memory_map.ub = ub;
+    pfl[t_n * JL_GC_N_POOLS + p_n] = gc_sweep_page(p, scratch, pg, pfl[t_n * JL_GC_N_POOLS + p_n], sweep_full, osize);
 }
 
 // sweep over all memory that is being used and not in a pool
@@ -1601,10 +1547,15 @@ static void gc_sweep_pool(int sweep_full)
             }
             p->newpages = NULL;
         }
+        jl_gc_pagemeta_t *scratch = NULL;
+        jl_gc_pagemeta_t *pg = ptls2->page_metadata_back;
+        while (pg != NULL) {
+            jl_gc_pagemeta_t *pg2 = pg->next;
+            gc_sweep_pool_page(pfl, &scratch, pg, sweep_full);
+            pg = pg2;
+        }
+        ptls2->page_metadata_back = scratch;
     }
-
-    // the actual sweeping
-    sweep_pool_pagetable(pfl, sweep_full);
 
     // null out terminal pointers of free lists
     for (int t_i = 0; t_i < n_threads; t_i++) {
@@ -1615,6 +1566,11 @@ static void gc_sweep_pool(int sweep_full)
             }
         }
     }
+
+    uv_mutex_lock(&gc_threads_lock);
+    jl_atomic_store(&gc_sweeping_running, 1);
+    uv_cond_broadcast(&gc_threads_cond);
+    uv_mutex_unlock(&gc_threads_lock);
 
     gc_time_pool_end(sweep_full);
 }
@@ -3574,7 +3530,10 @@ void jl_init_thread_heap(jl_ptls_t ptls)
 // System-wide initializations
 void jl_gc_init(void)
 {
-
+    JL_MUTEX_INIT(&alloc_map.lock, "alloc_map_lock");
+    JL_MUTEX_INIT(&global_page_pool_clean.lock, "global_page_pool_clean_lock");
+    JL_MUTEX_INIT(&global_page_pool_to_madvise.lock, "global_page_pool_to_madvise_lock");
+    JL_MUTEX_INIT(&global_page_pool_madvised.lock, "global_page_pool_clean_lock");
     JL_MUTEX_INIT(&heapsnapshot_lock, "heapsnapshot_lock");
     JL_MUTEX_INIT(&finalizers_lock, "finalizers_lock");
     uv_mutex_init(&gc_cache_lock);
@@ -4030,8 +3989,8 @@ JL_DLLEXPORT int jl_gc_conservative_gc_support_enabled(void)
 JL_DLLEXPORT jl_value_t *jl_gc_internal_obj_base_ptr(void *p)
 {
     p = (char *) p - 1;
-    jl_gc_pagemeta_t *meta = page_metadata(p);
-    if (meta) {
+    if (gc_alloc_map_is_set((char*)p)) {
+        jl_gc_pagemeta_t *meta = page_metadata(p);
         char *page = gc_page_data(p);
         // offset within page.
         size_t off = (char *)p - page;
