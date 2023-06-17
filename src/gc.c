@@ -3533,7 +3533,7 @@ void jl_gc_init(void)
     JL_MUTEX_INIT(&alloc_map.lock, "alloc_map_lock");
     JL_MUTEX_INIT(&global_page_pool_clean.lock, "global_page_pool_clean_lock");
     JL_MUTEX_INIT(&global_page_pool_to_madvise.lock, "global_page_pool_to_madvise_lock");
-    JL_MUTEX_INIT(&global_page_pool_madvised.lock, "global_page_pool_clean_lock");
+    JL_MUTEX_INIT(&global_page_pool_madvised.lock, "global_page_pool_madvised_lock");
     JL_MUTEX_INIT(&heapsnapshot_lock, "heapsnapshot_lock");
     JL_MUTEX_INIT(&finalizers_lock, "finalizers_lock");
     uv_mutex_init(&gc_cache_lock);

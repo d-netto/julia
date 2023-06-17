@@ -93,7 +93,7 @@ NOINLINE jl_gc_pagemeta_t *jl_gc_alloc_page(void) JL_NOTSAFEPOINT
         goto exit;
     }
 
-    // failed both: must map a new set of pages
+    // must map a new set of pages
     char *data = jl_gc_try_alloc_pages();
     if (data == NULL) {
         jl_throw(jl_memory_exception);
