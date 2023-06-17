@@ -80,7 +80,8 @@ NOINLINE jl_gc_pagemeta_t *jl_gc_alloc_page(void) JL_NOTSAFEPOINT
     jl_mutex_unlock_nogc(&global_page_pool_to_madvise.lock);
     if (meta != NULL) {
         gc_alloc_map_set(meta->data, 1);
-        goto exit;
+        // page is already mapped
+        return meta;
     }
 
     // try to get page from `pool_madvised`
@@ -89,8 +90,7 @@ NOINLINE jl_gc_pagemeta_t *jl_gc_alloc_page(void) JL_NOTSAFEPOINT
     jl_mutex_unlock_nogc(&global_page_pool_madvised.lock);
     if (meta != NULL) {
         gc_alloc_map_set(meta->data, 1);
-        // page is already mapped
-        return meta;
+        goto exit;
     }
 
     // failed both: must map a new set of pages
