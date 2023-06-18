@@ -17,11 +17,8 @@ _Atomic(int) gc_n_threads_marking;
 _Atomic(int) gc_master_tid;
 // `tid` of first GC thread
 int gc_first_tid;
-// Mutex/cond used to synchronize sleep/wakeup of GC threads
-uv_mutex_t gc_threads_lock;
-uv_cond_t gc_threads_cond;
 // To indicate whether concurrent sweeping may run
-uv_sem_t gc_sweeping_semaphore;
+_Atomic(int) gc_sweeping_assists;
 
 // Linked list of callback functions
 
@@ -1569,7 +1566,11 @@ static void gc_sweep_pool(int sweep_full)
 
     // wake thread up to sweep concurrently
     if (jl_n_gcthreads > 0) {
-        uv_sem_post(&gc_sweeping_semaphore);
+        jl_ptls_t ptls2 = gc_all_tls_states[gc_first_tid];
+        jl_atomic_fetch_add(&gc_sweeping_assists, 1);
+        uv_mutex_lock(&ptls2->sleep_lock);
+        uv_cond_signal(&ptls2->wake_signal);
+        uv_mutex_unlock(&ptls2->sleep_lock);
     }
 
     gc_time_pool_end(sweep_full);
@@ -2771,10 +2772,13 @@ void gc_mark_loop_parallel(jl_ptls_t ptls, int master)
     if (master) {
         jl_atomic_store(&gc_master_tid, ptls->tid);
         // Wake threads up and try to do some work
-        uv_mutex_lock(&gc_threads_lock);
         jl_atomic_fetch_add(&gc_n_threads_marking, 1);
-        uv_cond_broadcast(&gc_threads_cond);
-        uv_mutex_unlock(&gc_threads_lock);
+        for (int i = gc_first_tid; i < gc_first_tid + jl_n_gcthreads; i++) {
+            jl_ptls_t ptls2 = gc_all_tls_states[i];
+            uv_mutex_lock(&ptls2->sleep_lock);
+            uv_cond_signal(&ptls2->wake_signal);
+            uv_mutex_unlock(&ptls2->sleep_lock);
+        }
         gc_mark_and_steal(ptls);
         jl_atomic_fetch_add(&gc_n_threads_marking, -1);
     }
@@ -3538,9 +3542,6 @@ void jl_gc_init(void)
     JL_MUTEX_INIT(&finalizers_lock, "finalizers_lock");
     uv_mutex_init(&gc_cache_lock);
     uv_mutex_init(&gc_perm_lock);
-    uv_mutex_init(&gc_threads_lock);
-    uv_cond_init(&gc_threads_cond);
-    uv_sem_init(&gc_sweeping_semaphore, 0);
 
     jl_gc_init_page();
     jl_gc_debug_init();
