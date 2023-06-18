@@ -20,7 +20,7 @@ int gc_first_tid;
 // Mutex/cond used to synchronize sleep/wakeup of GC threads
 uv_mutex_t gc_threads_lock;
 uv_cond_t gc_threads_cond;
-// To indicate whether concurrent sweeping may
+// To indicate whether concurrent sweeping may run
 uv_sem_t gc_sweeping_semaphore;
 
 // Linked list of callback functions
