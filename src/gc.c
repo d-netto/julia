@@ -15,13 +15,13 @@ extern "C" {
 _Atomic(int) gc_n_threads_marking;
 // `tid` of mutator thread that triggered GC
 _Atomic(int) gc_master_tid;
-// Flag to indicate whether concurrent sweeping is running
-_Atomic(uint8_t) gc_sweeping_running;
 // `tid` of first GC thread
 int gc_first_tid;
 // Mutex/cond used to synchronize sleep/wakeup of GC threads
 uv_mutex_t gc_threads_lock;
 uv_cond_t gc_threads_cond;
+// To indicate whether concurrent sweeping may
+uv_sem_t gc_sweeping_semaphore;
 
 // Linked list of callback functions
 
@@ -1569,11 +1569,7 @@ static void gc_sweep_pool(int sweep_full)
 
     // wake thread up to sweep concurrently
     if (jl_n_gcthreads > 0) {
-        jl_ptls_t ptls2 = gc_all_tls_states[gc_first_tid];
-        uv_mutex_lock(&ptls2->sleep_lock);
-        jl_atomic_store(&gc_sweeping_running, 1);
-        uv_cond_broadcast(&ptls2->wake_signal);
-        uv_mutex_unlock(&ptls2->sleep_lock);
+        uv_sem_post(&gc_sweeping_semaphore);
     }
 
     gc_time_pool_end(sweep_full);
@@ -3544,6 +3540,7 @@ void jl_gc_init(void)
     uv_mutex_init(&gc_perm_lock);
     uv_mutex_init(&gc_threads_lock);
     uv_cond_init(&gc_threads_cond);
+    uv_sem_init(&gc_sweeping_semaphore, 0);
 
     jl_gc_init_page();
     jl_gc_debug_init();

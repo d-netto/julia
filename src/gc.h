@@ -288,7 +288,6 @@ extern arraylist_t to_finalize;
 extern int64_t lazy_freed_pages;
 extern int gc_first_tid;
 extern int gc_n_threads;
-extern _Atomic(uint8_t) gc_sweeping_running;
 extern jl_ptls_t* gc_all_tls_states;
 
 STATIC_INLINE bigval_t *bigval_header(jl_taggedvalue_t *o) JL_NOTSAFEPOINT
@@ -352,6 +351,7 @@ STATIC_INLINE void gc_big_object_link(bigval_t *hdr, bigval_t **list) JL_NOTSAFE
 
 extern uv_mutex_t gc_threads_lock;
 extern uv_cond_t gc_threads_cond;
+extern uv_sem_t gc_sweeping_semaphore;
 extern _Atomic(int) gc_n_threads_marking;
 void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_markqueue_t *mq);
 void gc_mark_finlist_(jl_gc_markqueue_t *mq, jl_value_t **fl_begin, jl_value_t **fl_end) JL_NOTSAFEPOINT;
