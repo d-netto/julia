@@ -125,16 +125,17 @@ void jl_gc_threadfun(void *arg)
 
     while (1) {
         uv_mutex_lock(&gc_threads_lock);
-        while (jl_atomic_load(&gc_n_threads_marking) == 0 && !jl_atomic_load(&gc_sweeping_running)) {
+        while (jl_atomic_load(&gc_n_threads_marking) == 0) {
             uv_cond_wait(&gc_threads_cond, &gc_threads_lock);
         }
         uv_mutex_unlock(&gc_threads_lock);
-        int must_sweep = jl_atomic_load(&gc_sweeping_running) && (ptls->tid == gc_first_tid);
-        if (!must_sweep) {
-            gc_mark_loop_parallel(ptls, 0);
-        }
-        else {
-            jl_atomic_store(&gc_sweeping_running, 0);
+        gc_mark_loop_parallel(ptls, 0);
+        if (ptls->tid == gc_first_tid) {
+            uv_mutex_lock(&ptls->sleep_lock);
+            while (!jl_atomic_load(&gc_sweeping_running)) {
+                uv_cond_wait(&ptls->wake_signal, &ptls->sleep_lock);
+            }
+            uv_mutex_unlock(&ptls->sleep_lock);
             while (1) {
                 jl_mutex_lock_nogc(&global_page_pool_to_madvise.lock);
                 jl_gc_pagemeta_t *pg = pop_page_metadata_back(&global_page_pool_to_madvise.page_metadata_back);
@@ -147,6 +148,7 @@ void jl_gc_threadfun(void *arg)
                 push_page_metadata_back(&global_page_pool_madvised.page_metadata_back, pg);
                 jl_mutex_unlock_nogc(&global_page_pool_madvised.lock);
             }
+            jl_atomic_store(&gc_sweeping_running, 0);
         }
     }
 }

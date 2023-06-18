@@ -1567,10 +1567,14 @@ static void gc_sweep_pool(int sweep_full)
         }
     }
 
-    uv_mutex_lock(&gc_threads_lock);
-    jl_atomic_store(&gc_sweeping_running, 1);
-    uv_cond_broadcast(&gc_threads_cond);
-    uv_mutex_unlock(&gc_threads_lock);
+    // wake thread up to sweep concurrently
+    if (jl_n_gcthreads > 0) {
+        jl_ptls_t ptls2 = gc_all_tls_states[gc_first_tid];
+        uv_mutex_lock(&ptls2->sleep_lock);
+        jl_atomic_store(&gc_sweeping_running, 1);
+        uv_cond_broadcast(&ptls2->wake_signal);
+        uv_mutex_unlock(&ptls2->sleep_lock);
+    }
 
     gc_time_pool_end(sweep_full);
 }
