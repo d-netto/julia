@@ -30,11 +30,9 @@ void jl_gc_init_page(void)
 #define MAP_NORESERVE (0)
 #endif
 
-// Try to allocate a memory block for multiple pages
-// Return `NULL` if allocation failed. Result is aligned to `GC_PAGE_SZ`.
-char *jl_gc_try_alloc_pages(void) JL_NOTSAFEPOINT
+char *jl_gc_try_alloc_pages_(int pg_cnt) JL_NOTSAFEPOINT
 {
-    size_t pages_sz = GC_PAGE_SZ * block_pg_cnt;
+    size_t pages_sz = GC_PAGE_SZ * pg_cnt;
 #ifdef _OS_WINDOWS_
     char *mem = (char*)VirtualAlloc(NULL, pages_sz + GC_PAGE_SZ,
                                     MEM_RESERVE, PAGE_READWRITE);
@@ -52,6 +50,33 @@ char *jl_gc_try_alloc_pages(void) JL_NOTSAFEPOINT
         // round data pointer up to the nearest gc_page_data-aligned
         // boundary if mmap didn't already do so.
         mem = (char*)gc_page_data(mem + GC_PAGE_SZ - 1);
+    return mem;
+}
+
+// Try to allocate a memory block for multiple pages
+// Return `NULL` if allocation failed. Result is aligned to `GC_PAGE_SZ`.
+char *jl_gc_try_alloc_pages(void)
+{
+    unsigned pg_cnt = block_pg_cnt;
+    char *mem = NULL;
+    while (1) {
+        if (__likely((mem = jl_gc_try_alloc_pages_(pg_cnt))))
+            break;
+        size_t min_block_pg_alloc = MIN_BLOCK_PG_ALLOC;
+        if (GC_PAGE_SZ * min_block_pg_alloc < jl_page_size)
+            min_block_pg_alloc = jl_page_size / GC_PAGE_SZ; // exact division
+        if (pg_cnt >= 4 * min_block_pg_alloc) {
+            pg_cnt /= 4;
+            block_pg_cnt = pg_cnt;
+        }
+        else if (pg_cnt > min_block_pg_alloc) {
+            block_pg_cnt = pg_cnt = min_block_pg_alloc;
+        }
+        else {
+            jl_mutex_unlock_nogc(&global_page_pool_clean.lock);
+            jl_throw(jl_memory_exception);
+        }
+    }
     return mem;
 }
 
