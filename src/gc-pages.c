@@ -93,6 +93,14 @@ NOINLINE jl_gc_pagemeta_t *jl_gc_alloc_page(void) JL_NOTSAFEPOINT
         goto exit;
     }
 
+    jl_mutex_lock_nogc(&global_page_pool_clean.lock);
+    // another thread may have allocated a large block while we're waiting...
+    meta = pop_page_metadata_back(&global_page_pool_clean.page_metadata_back);
+    if (meta != NULL) {
+        jl_mutex_unlock_nogc(&global_page_pool_clean.lock);
+        gc_alloc_map_set(meta->data, 1);
+        goto exit;
+    }
     // must map a new set of pages
     char *data = jl_gc_try_alloc_pages();
     if (data == NULL) {
@@ -102,18 +110,15 @@ NOINLINE jl_gc_pagemeta_t *jl_gc_alloc_page(void) JL_NOTSAFEPOINT
     for (int i = 0; i < block_pg_cnt; i++) {
         jl_gc_pagemeta_t *pg = &meta[i];
         pg->data = data + GC_PAGE_SZ * i;
-        jl_mutex_lock_nogc(&alloc_map.lock);
         gc_alloc_map_maybe_create(pg->data);
-        jl_mutex_unlock_nogc(&alloc_map.lock);
         if (i == 0) {
             gc_alloc_map_set(pg->data, 1);
         }
         else {
-            jl_mutex_lock_nogc(&global_page_pool_clean.lock);
             push_page_metadata_back(&global_page_pool_clean.page_metadata_back, pg);
-            jl_mutex_unlock_nogc(&global_page_pool_clean.lock);
         }
     }
+    jl_mutex_unlock_nogc(&global_page_pool_clean.lock);
 exit:
 #ifdef _OS_WINDOWS_
     VirtualAlloc(meta->data, GC_PAGE_SZ, MEM_COMMIT, PAGE_READWRITE);

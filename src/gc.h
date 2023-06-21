@@ -214,7 +214,6 @@ typedef struct {
 } pagetable1_t;
 
 typedef struct {
-    jl_mutex_t lock;
     pagetable1_t *meta1[REGION2_PG_COUNT];
 } pagetable_t;
 
