@@ -183,7 +183,7 @@ typedef struct {
     jl_gc_pagemeta_t *page_metadata_back;
 } jl_gc_global_page_pool_t;
 
-// #define GC_CONCURRENT_SWEEPING_ENABLED
+#define GC_CONCURRENT_SWEEPING_ENABLED
 extern jl_gc_global_page_pool_t global_page_pool_clean;
 extern jl_gc_global_page_pool_t global_page_pool_to_madvise;
 extern jl_gc_global_page_pool_t global_page_pool_madvised;
