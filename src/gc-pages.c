@@ -30,6 +30,8 @@ void jl_gc_init_page(void)
 #define MAP_NORESERVE (0)
 #endif
 
+// Try to allocate a memory block for multiple pages
+// Return `NULL` if allocation failed. Result is aligned to `GC_PAGE_SZ`.
 char *jl_gc_try_alloc_pages_(int pg_cnt) JL_NOTSAFEPOINT
 {
     size_t pages_sz = GC_PAGE_SZ * pg_cnt;
@@ -53,8 +55,13 @@ char *jl_gc_try_alloc_pages_(int pg_cnt) JL_NOTSAFEPOINT
     return mem;
 }
 
-// Try to allocate a memory block for multiple pages
-// Return `NULL` if allocation failed. Result is aligned to `GC_PAGE_SZ`.
+// Allocate the memory for a new page. Starts with `block_pg_cnt` number
+// of pages. Decrease 4x every time so that there are enough space for a few.
+// more chunks (or other allocations). The final page count is recorded
+// and will be used as the starting count next time. If the page count is
+// smaller `MIN_BLOCK_PG_ALLOC` a `jl_memory_exception` is thrown.
+// Assumes `global_page_pool_clean.lock` is acquired, the lock is released before the
+// exception is thrown.
 char *jl_gc_try_alloc_pages(void)
 {
     unsigned pg_cnt = block_pg_cnt;
