@@ -62,7 +62,7 @@ char *jl_gc_try_alloc_pages_(int pg_cnt) JL_NOTSAFEPOINT
 // smaller `MIN_BLOCK_PG_ALLOC` a `jl_memory_exception` is thrown.
 // Assumes `global_page_pool_clean.lock` is acquired, the lock is released before the
 // exception is thrown.
-char *jl_gc_try_alloc_pages(void)
+char *jl_gc_try_alloc_pages(void) JL_NOTSAFEPOINT
 {
     unsigned pg_cnt = block_pg_cnt;
     char *mem = NULL;
