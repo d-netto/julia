@@ -142,16 +142,12 @@ void jl_gc_threadfun(void *arg)
         uv_mutex_unlock(&ptls->sleep_lock);
         if (may_sweep(ptls)) {
             while (1) {
-                jl_mutex_lock_nogc(&global_page_pool_to_madvise.lock);
-                jl_gc_pagemeta_t *pg = pop_page_metadata_back(&global_page_pool_to_madvise.page_metadata_back);
-                jl_mutex_unlock_nogc(&global_page_pool_to_madvise.lock);
+                jl_gc_pagemeta_t *pg = pop_lf_page_metadata_back(&global_page_pool_to_madvise);
                 if (pg == NULL) {
                     break;
                 }
                 jl_gc_free_page(pg);
-                jl_mutex_lock_nogc(&global_page_pool_madvised.lock);
-                push_page_metadata_back(&global_page_pool_madvised.page_metadata_back, pg);
-                jl_mutex_unlock_nogc(&global_page_pool_madvised.lock);
+                push_lf_page_metadata_back(&global_page_pool_madvised, pg);
             }
             jl_atomic_fetch_add(&gc_sweeping_assists_needed, -1);
         }

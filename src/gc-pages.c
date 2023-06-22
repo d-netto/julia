@@ -60,7 +60,7 @@ char *jl_gc_try_alloc_pages_(int pg_cnt) JL_NOTSAFEPOINT
 // more chunks (or other allocations). The final page count is recorded
 // and will be used as the starting count next time. If the page count is
 // smaller `MIN_BLOCK_PG_ALLOC` a `jl_memory_exception` is thrown.
-// Assumes `global_page_pool_clean.lock` is acquired, the lock is released before the
+// Assumes `gc_perm_lock` is acquired, the lock is released before the
 // exception is thrown.
 char *jl_gc_try_alloc_pages(void) JL_NOTSAFEPOINT
 {
@@ -80,7 +80,7 @@ char *jl_gc_try_alloc_pages(void) JL_NOTSAFEPOINT
             block_pg_cnt = pg_cnt = min_block_pg_alloc;
         }
         else {
-            jl_mutex_unlock_nogc(&global_page_pool_clean.lock);
+            uv_mutex_unlock(&gc_perm_lock);
             jl_throw(jl_memory_exception);
         }
     }
@@ -98,18 +98,14 @@ NOINLINE jl_gc_pagemeta_t *jl_gc_alloc_page(void) JL_NOTSAFEPOINT
     jl_gc_pagemeta_t *meta = NULL;
 
     // try to get page from `pool_clean`
-    jl_mutex_lock_nogc(&global_page_pool_clean.lock);
-    meta = pop_page_metadata_back(&global_page_pool_clean.page_metadata_back);
-    jl_mutex_unlock_nogc(&global_page_pool_clean.lock);
+    meta = pop_lf_page_metadata_back(&global_page_pool_clean);
     if (meta != NULL) {
         gc_alloc_map_set(meta->data, 1);
         goto exit;
     }
 
     // try to get page from `pool_to_madvise`
-    jl_mutex_lock_nogc(&global_page_pool_to_madvise.lock);
-    meta = pop_page_metadata_back(&global_page_pool_to_madvise.page_metadata_back);
-    jl_mutex_unlock_nogc(&global_page_pool_to_madvise.lock);
+    meta = pop_lf_page_metadata_back(&global_page_pool_to_madvise);
     if (meta != NULL) {
         gc_alloc_map_set(meta->data, 1);
         // page is already mapped
@@ -117,19 +113,17 @@ NOINLINE jl_gc_pagemeta_t *jl_gc_alloc_page(void) JL_NOTSAFEPOINT
     }
 
     // try to get page from `pool_madvised`
-    jl_mutex_lock_nogc(&global_page_pool_madvised.lock);
-    meta = pop_page_metadata_back(&global_page_pool_madvised.page_metadata_back);
-    jl_mutex_unlock_nogc(&global_page_pool_madvised.lock);
+    meta = pop_lf_page_metadata_back(&global_page_pool_madvised);
     if (meta != NULL) {
         gc_alloc_map_set(meta->data, 1);
         goto exit;
     }
 
-    jl_mutex_lock_nogc(&global_page_pool_clean.lock);
+    uv_mutex_lock(&gc_perm_lock);
     // another thread may have allocated a large block while we're waiting...
-    meta = pop_page_metadata_back(&global_page_pool_clean.page_metadata_back);
+    meta = pop_lf_page_metadata_back(&global_page_pool_clean);
     if (meta != NULL) {
-        jl_mutex_unlock_nogc(&global_page_pool_clean.lock);
+        uv_mutex_unlock(&gc_perm_lock);
         gc_alloc_map_set(meta->data, 1);
         goto exit;
     }
@@ -147,10 +141,10 @@ NOINLINE jl_gc_pagemeta_t *jl_gc_alloc_page(void) JL_NOTSAFEPOINT
             gc_alloc_map_set(pg->data, 1);
         }
         else {
-            push_page_metadata_back(&global_page_pool_clean.page_metadata_back, pg);
+            push_lf_page_metadata_back(&global_page_pool_clean, pg);
         }
     }
-    jl_mutex_unlock_nogc(&global_page_pool_clean.lock);
+    uv_mutex_unlock(&gc_perm_lock);
 exit:
 #ifdef _OS_WINDOWS_
     VirtualAlloc(meta->data, GC_PAGE_SZ, MEM_COMMIT, PAGE_READWRITE);

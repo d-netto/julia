@@ -179,9 +179,52 @@ typedef struct _jl_gc_pagemeta_t {
 } jl_gc_pagemeta_t;
 
 typedef struct {
-    jl_mutex_t lock;
-    jl_gc_pagemeta_t *page_metadata_back;
+    _Atomic(jl_gc_pagemeta_t *) page_metadata_back;
 } jl_gc_global_page_pool_t;
+
+#define GC_BACKOFF_MIN 4
+#define GC_BACKOFF_MAX 12
+
+STATIC_INLINE void gc_backoff(int *i) JL_NOTSAFEPOINT
+{
+    if (*i < GC_BACKOFF_MAX) {
+        (*i)++;
+    }
+    for (int j = 0; j < (1 << *i); j++) {
+        jl_cpu_pause();
+    }
+}
+
+// Lock-free stack implementation taken
+// from Herlihy's "The Art of Multiprocessor Programming"
+
+STATIC_INLINE void push_lf_page_metadata_back(jl_gc_global_page_pool_t *pool, jl_gc_pagemeta_t *elt) JL_NOTSAFEPOINT
+{
+    int backoff = GC_BACKOFF_MIN;
+    while (1) {
+        jl_gc_pagemeta_t *old_back = jl_atomic_load_relaxed(&pool->page_metadata_back);
+        elt->next = old_back;
+        if (jl_atomic_cmpswap(&pool->page_metadata_back, &old_back, elt)) {
+            break;
+        }
+        gc_backoff(&backoff);
+    }
+}
+
+STATIC_INLINE jl_gc_pagemeta_t *pop_lf_page_metadata_back(jl_gc_global_page_pool_t *pool) JL_NOTSAFEPOINT
+{
+    int backoff = GC_BACKOFF_MIN;
+    while (1) {
+        jl_gc_pagemeta_t *old_back = jl_atomic_load_relaxed(&pool->page_metadata_back);
+        if (old_back == NULL) {
+            return NULL;
+        }
+        if (jl_atomic_cmpswap(&pool->page_metadata_back, &old_back, old_back->next)) {
+            return old_back;
+        }
+        gc_backoff(&backoff);
+    }
+}
 
 #define GC_CONCURRENT_SWEEPING_ENABLED
 extern jl_gc_global_page_pool_t global_page_pool_clean;

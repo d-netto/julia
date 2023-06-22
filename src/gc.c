@@ -1450,12 +1450,10 @@ done:
     #ifdef GC_CONCURRENT_SWEEPING_ENABLED
         if (jl_n_gcthreads == 0) {
             jl_gc_free_page(pg);
-            push_page_metadata_back(&global_page_pool_madvised.page_metadata_back, pg);
+            push_lf_page_metadata_back(&global_page_pool_madvised, pg);
         }
         else {
-            jl_mutex_lock_nogc(&global_page_pool_to_madvise.lock);
-            push_page_metadata_back(&global_page_pool_to_madvise.page_metadata_back, pg);
-            jl_mutex_unlock_nogc(&global_page_pool_to_madvise.lock);
+            push_lf_page_metadata_back(&global_page_pool_to_madvise, pg);
         }
     #else
         jl_gc_free_page(pg);
@@ -2757,19 +2755,6 @@ void gc_mark_and_steal(jl_ptls_t ptls)
     }
 }
 
-#define GC_BACKOFF_MIN 4
-#define GC_BACKOFF_MAX 12
-
-void gc_mark_backoff(int *i)
-{
-    if (*i < GC_BACKOFF_MAX) {
-        (*i)++;
-    }
-    for (int j = 0; j < (1 << *i); j++) {
-        jl_cpu_pause();
-    }
-}
-
 void gc_mark_loop_parallel(jl_ptls_t ptls, int master)
 {
     int backoff = GC_BACKOFF_MIN;
@@ -2794,7 +2779,7 @@ void gc_mark_loop_parallel(jl_ptls_t ptls, int master)
         }
         jl_atomic_fetch_add(&gc_n_threads_marking, -1);
         // Failed to steal
-        gc_mark_backoff(&backoff);
+        gc_backoff(&backoff);
     }
 }
 
@@ -3538,9 +3523,6 @@ void jl_init_thread_heap(jl_ptls_t ptls)
 // System-wide initializations
 void jl_gc_init(void)
 {
-    JL_MUTEX_INIT(&global_page_pool_clean.lock, "global_page_pool_clean_lock");
-    JL_MUTEX_INIT(&global_page_pool_to_madvise.lock, "global_page_pool_to_madvise_lock");
-    JL_MUTEX_INIT(&global_page_pool_madvised.lock, "global_page_pool_madvised_lock");
     JL_MUTEX_INIT(&heapsnapshot_lock, "heapsnapshot_lock");
     JL_MUTEX_INIT(&finalizers_lock, "finalizers_lock");
     uv_mutex_init(&gc_cache_lock);
